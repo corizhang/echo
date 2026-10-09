@@ -31,7 +31,7 @@ docker compose up -d --build
 
 浏览器打开 `http://localhost:8080`。栈包括 Web/Nginx、Node API、PostgreSQL、Redis、LiveKit；Web 消息和频道会写入数据库并由 WebSocket 推送，语音使用 LiveKit/WebRTC。点击左下角齿轮打开语音设置：先运行麦克风测试并查看输入电平，再选输出设备并播放测试音。外网访问时需使用 HTTPS，浏览器才会提供媒体设备权限和设备列表。`docker compose logs -f` 查看日志，`docker compose down` 停止；持久化数据保存在 Compose volumes。清空数据库需显式删除 `postgres-data` volume。
 
-Cloudflare Tunnel 默认不启动。实时语音媒体需要 LiveKit 的公网 UDP 媒体端口；普通 HTTP Tunnel 不转发该 UDP 流量。当前开发栈面向本机验证，API 尚无完整用户账号系统，不要直接暴露到公网供他人使用。正式公网部署前需要补账户认证、授权、限流和正确的 LiveKit 公网地址/UDP 配置。
+Cloudflare Tunnel 默认不启动。实时语音媒体需要 LiveKit 的公网 UDP 媒体端口；普通 HTTP Tunnel 不转发该 UDP 流量。当前账号系统面向两位好友的封闭测试，尚无管理员账号管理、密码重置和扩展成员能力；公网部署前请配置唯一强密码、正确的 LiveKit 公网地址/UDP 端口和防火墙规则。
 
 ## Mock API 与后端契约
 
@@ -47,7 +47,7 @@ Cloudflare Tunnel 默认不启动。实时语音媒体需要 LiveKit 的公网 U
 
 本地 Docker 服务启动后执行 `node scripts/check-room-flow.mjs`，检查房间发现、预览、消息权限、重复加入、房主转交、邀请和结束流程。脚本只创建独立临时房间，完成后关闭自己创建的房间；不修改现有房间。房间语音使用现有音频设备配置，真实双人通话与魔兽联机需要实机验证。
 
-目前 `/me` 仍采用本地开发身份；房间昵称统一取当前资料。完整账号认证尚未实现，当前的小队直接加入能力只用于本地开发，不能作为公网访问控制。
+HTTP 服务现已关闭公开注册，只提供 `lin`、`mori` 两个预置测试账号。首次启动 API 时会从 `.env` 读取两组至少 16 位密码，并写入 scrypt 密码哈希；登录会话有效期 7 天，可在左下角退出。密码保存在被 Git 忽略的 `.env`，本地生成的明文清单保存在被忽略的 `.test-accounts.local.txt`。不要公开这两个文件。直接用 `file://` 打开时仍是无登录的 mock 演示模式。
 
 ## Windows 桌面端
 运行 npm run build:desktop 构建本地开发客户端。使用说明与当前限制见 docs/windows-desktop.md。

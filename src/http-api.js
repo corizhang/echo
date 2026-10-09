@@ -2,6 +2,8 @@
   if (location.protocol === 'file:') return
   const base = window.EchoDesktop ? window.EchoServerUrl : location.origin
   const listeners = new Map()
+  const AUTH_TOKEN_KEY = 'echo.auth.v1'
+  const getToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || ''
   const ROOM_STORAGE_KEY = 'echo.game-room.v1'
   const readRoomState = () => { try { return JSON.parse(localStorage.getItem(ROOM_STORAGE_KEY) || '{}') } catch { return {} } }
   const writeRoomState = (state) => localStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify(state))
@@ -9,24 +11,28 @@
     const roomId = path.match(/^\/game-rooms\/([^/]+)/)?.[1]
     const roomState = readRoomState()
     const roomToken = roomId && roomState.sessions?.[decodeURIComponent(roomId)]
-    const response = await fetch(`${base}/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(roomToken ? { 'X-Echo-Game-Session': roomToken } : {}), ...options.headers } })
+    const token = getToken()
+    const response = await fetch(`${base}/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(roomToken ? { 'X-Echo-Game-Session': roomToken } : {}), ...options.headers } })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) { const error = new Error(body.error || `请求失败 (${response.status})`); error.status = response.status; throw error }
+    if (!response.ok) { const error = new Error(body.error || `请求失败 (${response.status})`); error.status = response.status; if (response.status === 401 && !path.startsWith('/auth/login')) emit({ type: 'auth.expired', data: {} }); throw error }
     return body
   }
   const emit = (event) => { for (const listener of listeners.get(event.type) || []) listener(event.data) }
   let socket, retryTimer, stopped = false
   function connectEvents() {
-    if (stopped) return
+    if (stopped || !getToken()) return
     socket = new WebSocket(`${base.replace(/^http/, 'ws')}/api/v1/events`)
-    socket.onopen = () => emit({ type: 'connection.restored', data: {} })
-    socket.onmessage = ({ data }) => { try { emit(JSON.parse(data)) } catch (error) { console.warn('Invalid event', error) } }
+    socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: getToken() }))
+    socket.onmessage = ({ data }) => { try { const event = JSON.parse(data); if (event.type === 'authenticated') emit({ type: 'connection.restored', data: {} }); else emit(event) } catch (error) { console.warn('Invalid event', error) } }
     socket.onclose = () => { if (!stopped) retryTimer = setTimeout(connectEvents, 2500) }
   }
   connectEvents()
 
   window.EchoApi = {
     mode: 'http',
+    currentToken: getToken,
+    async login(username, password) { const result = await request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }); localStorage.setItem(AUTH_TOKEN_KEY, result.token); socket?.close(); connectEvents(); return result.user },
+    async logout() { try { await request('/auth/logout', { method: 'POST' }) } finally { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem('echo.game-room.v1'); window.dispatchEvent(new CustomEvent('echo:signed-out')); socket?.close() } },
     getGameRelayTicket: (id) => request(`/game-rooms/${encodeURIComponent(id)}/relay-ticket`, { method: 'POST' }),
     getMe: () => request('/me'),
     getServers: () => request('/servers'),

@@ -198,9 +198,13 @@
   api.subscribe('channel.created', () => renderChannels())
 
   async function start() {
+    await window.EchoAuthReady
     state.user = await api.getMe(); state.servers = await api.getServers(); state.serverId = state.servers[0]?.id
     await selectServer(state.serverId)
     $('.profile-copy strong').textContent = state.user.displayName
+    const avatar = $('.profile-avatar'); avatar.textContent = state.user.avatar || state.user.displayName.slice(0, 1); avatar.className = `avatar ${state.user.color || 'blue'} profile-avatar`; const presence = document.createElement('span'); presence.className = 'presence'; avatar.append(presence)
+    document.querySelectorAll('.settings-nav-footer .avatar').forEach((item) => { item.textContent = state.user.avatar || state.user.displayName.slice(0, 1); item.className = `avatar ${state.user.color || 'blue'}` })
+    document.querySelectorAll('.settings-nav-footer strong').forEach((item) => { item.textContent = state.user.displayName })
   }
   window.EchoAppReady = start().catch((error) => { console.error(error); toast('初始化失败，请刷新页面'); throw error })
 })()

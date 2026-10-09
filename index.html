@@ -42,7 +42,19 @@
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9a7 7 0 0 1 11.8-2L20 12M4 12l2.7 5a7 7 0 0 0 11.8-2"/></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 12 7-12 7z"/></symbol>
       <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l3-3A5 5 0 0 0 13 2.9l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3A5 5 0 0 0 11 21.1l1.7-1.7"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5m5 5H3m8-9h7a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3h-7"/></symbol>
     </svg>
+    <section class="auth-screen" id="auth-screen" hidden aria-labelledby="auth-title">
+      <form class="auth-card" id="auth-form">
+        <span class="auth-mark"><svg class="icon"><use href="#i-sparkles"/></svg></span>
+        <h1 id="auth-title">欢迎回来</h1><p>登录 Echo 小队，和朋友继续聊天开黑。</p>
+        <label>用户名<input id="auth-username" name="username" autocomplete="username" required maxlength="32" autofocus></label>
+        <label>密码<input id="auth-password" name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <p class="auth-feedback" id="auth-feedback" role="alert" aria-live="polite"></p>
+        <button class="room-button primary" id="auth-submit" type="submit">登录</button>
+        <small>这是邀请制小队。请使用管理员发给你的账号。</small>
+      </form>
+    </section>
     <main class="app-shell">
       <aside class="channel-sidebar">
         <div class="server-heading" id="server-heading"><span class="squad-mark"><svg class="icon"><use href="#i-sparkles"/></svg></span><div><strong>我们的小队</strong><small>一起聊天，一起开黑</small></div></div>
@@ -56,7 +68,7 @@
           </section>
         </div>
       <div class="voice-connected" id="voice-connected" hidden><div class="connected-status"><span class="connected-dot"></span><div><strong>语音已连接</strong><span id="connected-channel">开黑大厅 · 低延迟</span></div></div><div class="connection-quality"><svg class="icon"><use href="#i-wifi"/></svg><span>良好</span><button class="icon-button" id="leave-voice" title="离开语音"><svg class="icon"><use href="#i-headphones-off"/></svg></button></div></div>
-        <div class="profile-bar"><div class="avatar blue profile-avatar">L<span class="presence"></span></div><div class="profile-copy"><strong>Lin</strong><span>在线</span></div><button class="icon-button" id="mute-button" title="静音"><svg class="icon"><use href="#i-mic"/></svg></button><button class="icon-button device-menu-trigger" id="input-device-menu-button" title="选择输入设备" aria-label="选择输入设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="deafen-button" title="耳机静音"><svg class="icon"><use href="#i-headphones"/></svg></button><button class="icon-button device-menu-trigger" id="output-device-menu-button" title="选择输出设备" aria-label="选择输出设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="open-audio-settings" title="用户设置" aria-label="用户设置"><svg class="icon"><use href="#i-settings"/></svg></button></div>
+        <div class="profile-bar"><div class="avatar blue profile-avatar">L<span class="presence"></span></div><div class="profile-copy"><strong>Lin</strong><span>在线</span></div><button class="icon-button" id="mute-button" title="静音"><svg class="icon"><use href="#i-mic"/></svg></button><button class="icon-button device-menu-trigger" id="input-device-menu-button" title="选择输入设备" aria-label="选择输入设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="deafen-button" title="耳机静音"><svg class="icon"><use href="#i-headphones"/></svg></button><button class="icon-button device-menu-trigger" id="output-device-menu-button" title="选择输出设备" aria-label="选择输出设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="open-audio-settings" title="用户设置" aria-label="用户设置"><svg class="icon"><use href="#i-settings"/></svg></button><button class="icon-button" id="logout-button" title="退出登录" aria-label="退出登录"><svg class="icon"><use href="#i-logout"/></svg></button></div>
       </aside>
       <section class="chat-pane">
         <header class="chat-header"><div class="chat-title"><svg class="icon hash-header"><use href="#i-hash"/></svg><strong id="room-title">闲聊</strong><span class="header-divider"></span><span class="topic" id="room-topic">今晚也要玩得开心</span></div><div class="header-actions"><button class="icon-button" title="通知"><svg class="icon"><use href="#i-bell"/></svg></button><button class="icon-button" id="pins-button" title="置顶消息"><svg class="icon"><use href="#i-inbox"/></svg></button><button class="icon-button action-active" id="toggle-members" title="成员列表"><svg class="icon"><use href="#i-users"/></svg></button><label class="search-box"><input id="search-input" placeholder="搜索消息"><svg class="icon"><use href="#i-search"/></svg><kbd>Ctrl K</kbd></label><button class="icon-button" title="帮助"><svg class="icon"><use href="#i-help"/></svg></button></div></header>
@@ -128,6 +140,7 @@
     <script src="./src/mock-data.js"></script>
     <script src="./src/mock-api.js?v=2"></script>
     <script src="./src/http-api.js?v=2"></script>
+    <script src="./src/auth-ui.js?v=1"></script>
     <script src="./src/audio-ui.js?v=20261009-3"></script>
     <script>
       window.EchoVoiceReady = new Promise((resolve, reject) => {

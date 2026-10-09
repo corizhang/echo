@@ -22,6 +22,8 @@ services:
       REDIS_URL: redis://redis:6379
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      ECHO_TEST_LIN_PASSWORD: ${ECHO_TEST_LIN_PASSWORD}
+      ECHO_TEST_MORI_PASSWORD: ${ECHO_TEST_MORI_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy

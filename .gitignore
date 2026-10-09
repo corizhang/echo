@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.test-accounts.local.txt
 *.tsbuildinfo
 
 src-tauri/target/
