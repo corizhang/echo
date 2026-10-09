@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#17191e" />
+    <meta name="description" content="Echo — 和朋友一起聊天、开黑。" />
+    <title>Echo · 游戏小队</title>
+    <link rel="stylesheet" href="./src/style.css?v=20261009-4" />
+  </head>
+  <body>
+    <svg class="svg-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5v8a1.5 1.5 0 0 1-1.5 1.5h-4v-6h-5v6h-4A1.5 1.5 0 0 1 4 18.5z"/></symbol>
+      <symbol id="i-hash" viewBox="0 0 24 24"><path d="M9 3 7 21M17 3l-2 18M4 8h17M3 16h17"/></symbol>
+      <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3m-4 0h8"/></symbol>
+      <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="m3 3 18 18M9 9v3a3 3 0 0 0 5.1 2.1M15 9V6a3 3 0 0 0-5.8-1M5 11a7 7 0 0 0 12 4.9M19 11a7 7 0 0 1-.5 2.6M12 18v3m-4 0h8"/></symbol>
+      <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M3 14v-3a9 9 0 0 1 18 0v3M3 14v4a2 2 0 0 0 2 2h2v-7H5a2 2 0 0 0-2 1Zm18 0v4a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 1Z"/></symbol>
+      <symbol id="i-headphones-off" viewBox="0 0 24 24"><path d="m3 3 18 18M5.6 5.6A9 9 0 0 1 21 11v3m0 0v4a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 1ZM3 14v4a2 2 0 0 0 2 2h2v-7H5a2 2 0 0 0-2 1Z"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.5 2.6-1.7-.7a8 8 0 0 1-1.8 1l-.3 1.9h-3l-.3-1.9a8 8 0 0 1-1.8-1l-1.7.7-1.5-2.6L7 15a8 8 0 0 1 0-2l-1.7-1.1 1.5-2.6 1.7.7a8 8 0 0 1 1.8-1l.3-1.9h3l.3 1.9a8 8 0 0 1 1.8 1l1.7-.7 1.5 2.6L19.5 13a8 8 0 0 1-.1 2Z"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12h4"/></symbol>
+      <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 4h16l2 11v5H2v-5L4 4Z"/><path d="M2 14h6l2 3h4l2-3h6"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2m6-10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm10 10v-2a4 4 0 0 0-3-3.9m-1-12a4 4 0 0 1 0 7.8"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 4.5 1.5c-.8 1-2.1 1.2-2.1 2.8m0 3.2h.01"/></symbol>
+      <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/></symbol>
+      <symbol id="i-attach" viewBox="0 0 24 24"><path d="m21 11.5-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.8-2.8l8.5-8.5"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24"><path d="m16 3 5 5-4 1-4 4v5l-2 2-3-6-6-3 2-2h5l4-4 1-2Z"/><path d="m2 22 7-7"/></symbol>
+      <symbol id="i-reply" viewBox="0 0 24 24"><path d="m9 17-5-5 5-5M4 12h10a6 6 0 0 1 6 6v1"/></symbol>
+      <symbol id="i-smile-plus" viewBox="0 0 24 24"><circle cx="10" cy="10" r="7"/><path d="M7 11s1.2 1.5 3 1.5 3-1.5 3-1.5m-4-4h.01m3.99 0h.01M19 15v6m-3-3h6"/></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 9a11 11 0 0 1 14 0m-11 4a6.5 6.5 0 0 1 8 0m-5 4h.01"/></symbol>
+      <symbol id="i-game" viewBox="0 0 24 24"><path d="M6 8h12a4 4 0 0 1 3.8 5.2l-1.2 4a2 2 0 0 1-3.2 1l-3.4-2.7h-4l-3.4 2.7a2 2 0 0 1-3.2-1l-1.2-4A4 4 0 0 1 6 8Z"/><path d="M7 11v4m-2-2h4m7-1h.01M18 14h.01"/></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Zm7 11 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14ZM5 15l.7 1.8L7.5 17.5l-1.8.7L5 20l-.7-1.8-1.8-.7 1.8-.7L5 15Z"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9a7 7 0 0 1 11.8-2L20 12M4 12l2.7 5a7 7 0 0 0 11.8-2"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 12 7-12 7z"/></symbol>
+    </svg>
+    <main class="app-shell">
+      <aside class="server-rail" id="server-rail" aria-label="服务器"></aside>
+      <aside class="channel-sidebar">
+        <button class="server-heading" id="server-heading"></button>
+        <div class="sidebar-scroll">
+          <section class="channel-section"><div class="section-label"><svg class="icon tiny"><use href="#i-chevron"/></svg><span>文字频道</span><button class="icon-button create-channel" data-type="text" title="创建文字频道"><svg class="icon"><use href="#i-plus"/></svg></button></div><div id="text-channels"></div></section>
+          <section class="channel-section voice-section"><div class="section-label"><svg class="icon tiny"><use href="#i-chevron"/></svg><span>语音频道</span><button class="icon-button create-channel" data-type="voice" title="创建语音频道"><svg class="icon"><use href="#i-plus"/></svg></button></div><div id="voice-channels"></div></section>
+          <div class="sidebar-promo"><div class="promo-icon"><svg class="icon"><use href="#i-wifi"/></svg></div><strong>准备好开黑了吗？</strong><p>加入语音频道，和队友一起畅聊。</p><button id="join-button">加入语音</button></div>
+        </div>
+        <div class="profile-bar"><div class="avatar blue profile-avatar">L<span class="presence"></span></div><div class="profile-copy"><strong>Lin</strong><span>在线</span></div><button class="icon-button" id="mute-button" title="静音"><svg class="icon"><use href="#i-mic"/></svg></button><button class="icon-button device-menu-trigger" id="input-device-menu-button" title="选择输入设备" aria-label="选择输入设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="deafen-button" title="耳机静音"><svg class="icon"><use href="#i-headphones"/></svg></button><button class="icon-button device-menu-trigger" id="output-device-menu-button" title="选择输出设备" aria-label="选择输出设备" aria-expanded="false"><svg class="icon"><use href="#i-chevron"/></svg></button><button class="icon-button" id="open-audio-settings" title="语音与音频设置"><svg class="icon"><use href="#i-settings"/></svg></button></div>
+      </aside>
+      <section class="chat-pane">
+        <header class="chat-header"><div class="chat-title"><svg class="icon hash-header"><use href="#i-hash"/></svg><strong id="room-title">闲聊</strong><span class="header-divider"></span><span class="topic" id="room-topic">今晚也要玩得开心</span></div><div class="header-actions"><button class="icon-button" title="通知"><svg class="icon"><use href="#i-bell"/></svg></button><button class="icon-button" id="pins-button" title="置顶消息"><svg class="icon"><use href="#i-inbox"/></svg></button><button class="icon-button action-active" id="toggle-members" title="成员列表"><svg class="icon"><use href="#i-users"/></svg></button><label class="search-box"><input id="search-input" placeholder="搜索消息"><svg class="icon"><use href="#i-search"/></svg><kbd>Ctrl K</kbd></label><button class="icon-button" title="帮助"><svg class="icon"><use href="#i-help"/></svg></button></div></header>
+        <div class="message-scroll" id="message-scroll"><div class="channel-welcome"><div class="welcome-hash"><svg class="icon"><use href="#i-hash"/></svg></div><h1 id="welcome-title">欢迎来到 #闲聊！</h1><p id="welcome-topic">这里是 #闲聊 的开始。</p><button class="invite-button" id="invite-button"><svg class="icon"><use href="#i-users"/></svg> 邀请朋友</button></div><div class="date-divider"><span>今天</span></div><div class="messages-list" id="messages"></div></div>
+        <div class="composer-wrap"><div class="reply-preview" id="reply-preview" hidden></div><form class="composer" id="message-form"><button type="button" class="composer-plus" title="附件"><svg class="icon"><use href="#i-attach"/></svg></button><textarea id="message-input" rows="1" placeholder="发送消息到 #闲聊"></textarea><button type="button" id="emoji-button" title="表情"><svg class="icon"><use href="#i-smile"/></svg></button><button type="submit" class="send-button" title="发送"><svg class="icon"><use href="#i-send"/></svg></button></form><div class="composer-hint"><span><strong>Enter</strong> 发送 · <strong>Shift + Enter</strong> 换行</span><span><svg class="icon tiny"><use href="#i-check"/></svg> 与朋友私密聊天</span></div></div>
+      </section>
+      <aside class="member-sidebar" id="member-sidebar"><div class="member-heading"><strong id="member-count">成员 — 0</strong><button class="icon-button" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div><div class="member-group-label" id="member-group-label">在线</div><div id="member-list"></div><div class="now-playing"><div class="playing-art"><svg class="icon"><use href="#i-game"/></svg></div><div class="playing-copy"><span>正在游玩</span><strong>VALORANT</strong><small>排位赛 · 组队中</small></div><span class="playing-live"></span></div></aside>
+      <aside class="pins-panel" id="pins-panel" hidden><div class="panel-heading"><strong>置顶消息</strong><button class="icon-button" id="close-pins" title="关闭"><svg class="icon"><use href="#i-more"/></svg></button></div><div id="pins-list"></div></aside>
+      <div class="voice-connected" id="voice-connected" hidden><div class="connected-status"><span class="connected-dot"></span><div><strong>语音已连接</strong><span id="connected-channel">开黑大厅 · 低延迟</span></div></div><div class="connection-quality"><svg class="icon"><use href="#i-wifi"/></svg><span>良好</span><button class="icon-button" id="leave-voice" title="离开语音"><svg class="icon"><use href="#i-headphones-off"/></svg></button></div></div>
+      <div class="emoji-popover" id="emoji-popover" hidden></div>
+      <div class="remote-audio" id="remote-audio" aria-live="off"></div>
+      <div class="device-popover" id="input-device-popover" hidden><div class="device-popover-title">输入设备</div><div class="device-popover-list" id="input-device-options" role="listbox" aria-label="输入设备"></div><button class="device-settings-link" data-open-audio-settings><svg class="icon"><use href="#i-settings"/></svg>语音设置</button></div>
+      <div class="device-popover output-popover" id="output-device-popover" hidden><div class="device-popover-title">输出设备</div><div class="device-popover-list" id="output-device-options" role="listbox" aria-label="输出设备"></div><button class="device-settings-link" data-open-audio-settings><svg class="icon"><use href="#i-settings"/></svg>语音设置</button></div>
+      <div class="audio-settings-overlay" id="audio-settings" hidden>
+        <section class="audio-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title">
+          <aside class="settings-navigation"><div class="settings-nav-heading">用户设置</div><button class="settings-nav-item selected"><svg class="icon"><use href="#i-headphones"/></svg>语音和视频</button><div class="settings-nav-divider"></div><div class="settings-nav-caption">语音连接</div><div class="settings-connection-state"><i></i><span>语音服务正常</span></div><div class="settings-nav-footer"><div class="avatar blue">L</div><div><strong>Lin</strong><span>在线</span></div></div></aside>
+          <div class="settings-content"><header class="settings-topbar"><span>语音和视频</span><button class="settings-close" id="close-audio-settings" title="关闭设置" aria-label="关闭设置"><svg class="icon"><use href="#i-close"/></svg></button></header><div class="settings-scroll"><div class="settings-body">
+            <h1 id="audio-settings-title">语音</h1>
+            <div class="settings-device-grid"><label class="settings-field"><span>麦克风</span><span class="settings-select-wrap"><svg class="icon"><use href="#i-mic"/></svg><select id="audio-input-device" aria-label="输入设备"></select></span></label><label class="settings-field"><span>扬声器</span><span class="settings-select-wrap"><svg class="icon"><use href="#i-headphones"/></svg><select id="audio-output-device" aria-label="输出设备"></select></span></label></div>
+            <div class="settings-volume-grid"><label class="volume-field"><span>语音播放音量 <output id="speaker-volume-value">100%</output></span><input id="speaker-volume" type="range" min="0" max="100" value="100" aria-label="语音播放音量"></label></div>
+            <div class="mic-test-block"><button class="primary-small" id="mic-test-button"><svg class="icon"><use href="#i-mic"/></svg><span>麦克风测试</span></button><div class="mic-meter" role="meter" aria-label="麦克风输入电平" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="mic-meter-level"></i></div><strong id="mic-meter-value">未测试</strong></div><div class="audio-setting-footer"><span id="mic-test-status">开始测试，说几句话确认麦克风工作正常。</span><button class="text-button" id="refresh-audio-devices"><svg class="icon"><use href="#i-refresh"/></svg>刷新设备</button></div>
+            <div class="speaker-test-row"><div><strong>扬声器测试</strong><span id="speaker-test-status">播放提示音，确认声音从所选设备输出。</span></div><button class="secondary-small" id="speaker-test-button"><svg class="icon"><use href="#i-play"/></svg><span>播放测试音</span></button></div>
+            <div class="settings-divider"></div><section class="advanced-audio"><div><h2>音频处理</h2><p>使用浏览器的回声消除、降噪和自动增益控制，优化语音通话质量。</p></div><div class="audio-processing-badges"><span><svg class="icon"><use href="#i-check"/></svg>回声消除</span><span><svg class="icon"><use href="#i-check"/></svg>降噪</span><span><svg class="icon"><use href="#i-check"/></svg>自动增益</span></div></section>
+            <div class="audio-settings-note"><svg class="icon"><use href="#i-help"/></svg><span>首次使用麦克风测试时，浏览器会请求麦克风权限。测试音频仅在本机处理，不会录制或上传。</span></div>
+          </div></div></div>
+        </section>
+      </div>
+      <div class="toast-region" id="toast-region" aria-live="polite"></div>
+    </main>
+    <script src="./src/mock-data.js"></script>
+    <script src="./src/mock-api.js"></script>
+    <script src="./src/http-api.js"></script>
+    <script src="./src/audio-ui.js?v=20261009-3"></script>
+    <script>
+      window.EchoVoiceReady = new Promise((resolve, reject) => {
+        if (location.protocol === 'file:') return resolve(false)
+        const script = document.createElement('script'); script.src = '/voice.js?v=3'; script.onload = () => resolve(true); script.onerror = reject; document.head.append(script)
+      })
+    </script>
+    <script src="./src/app.js?v=20261009-2"></script>
+  </body>
+</html>

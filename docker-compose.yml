@@ -1,0 +1,101 @@
+name: echo-local
+
+services:
+  web:
+    build: .
+    container_name: echo-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [echo]
+
+  api:
+    build: ./api
+    container_name: echo-api
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://echo:${POSTGRES_PASSWORD}@postgres:5432/echo
+      REDIS_URL: redis://redis:6379
+      LIVEKIT_URL: ws://localhost:8080
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [echo]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: echo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: echo
+      POSTGRES_USER: echo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./api/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U echo -d echo"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [echo]
+
+  redis:
+    image: redis:7-alpine
+    container_name: echo-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [echo]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: echo-tunnel
+    profiles: ["public"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on: [web]
+    networks: [echo]
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: echo-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7882:7882/udp"
+    networks: [echo]
+
+networks:
+  echo:
+
+volumes:
+  postgres-data:
+  redis-data:

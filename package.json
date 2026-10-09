@@ -1,0 +1,7 @@
+{
+  "name": "echo-web-assets",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": { "build:voice": "esbuild src/voice-entry.js --bundle --format=iife --outfile=voice.js" },
+  "devDependencies": { "esbuild": "^0.25.0", "livekit-client": "^2.22.4" }
+}

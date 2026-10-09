@@ -1,0 +1,10 @@
+port: 7880
+log_level: info
+
+rtc:
+  # UDP Mux keeps the local router/firewall rule to one media port.
+  udp_port: 7882
+  use_external_ip: true
+
+redis:
+  address: redis:6379
