@@ -8,9 +8,9 @@
 
 ## 网络与域名
 
-1. 在 VPS 防火墙/安全组和系统防火墙中配置：TCP 80 用于 HTTP 到 HTTPS 跳转及证书续期；TCP 443 仅允许测试成员公网 IP；UDP 7882 仅允许测试成员公网 IP；SSH 仅允许管理员 IP。不要开放 TCP 8080、3000、5432、6379 或 LiveKit TCP 7880。
+1. 在 VPS 防火墙/安全组和系统防火墙中配置：TCP 80 用于 HTTP 到 HTTPS 跳转及证书续期；TCP 443 仅允许测试成员公网 IP；UDP 7882 为首选语音媒体端口，TCP 7881 为网络受限时的 ICE 回退端口，两者均允许测试成员公网 IP；SSH 仅允许管理员 IP。不要开放 TCP 8080、3000、5432、6379 或 LiveKit API TCP 7880。
 2. 将自己的域名 `echo.example.com` 添加一条指向 VPS 公网 IPv4 的 DNS A 记录，设置为 DNS only（非代理）。这样 Caddy 可直接签发/续期证书，服务器也能看到连接者源 IP。不要把动态 DDNS 地址填到已固定的 VPS 记录。
-3. 确认 VPS 入站 UDP 7882 可达；LiveKit 使用单个 UDP mux 媒体端口。只有 HTTP 80/443 而没有这个 UDP 端口，语音不可用。
+3. 确认 VPS 入站 UDP 7882 可达；LiveKit 使用单个 UDP mux 媒体端口。TCP 7881 是 ICE 回退端口。只有 HTTP 80/443 而没有 UDP 7882，语音不可用。
 
 如果朋友的公网 IP 会变化，请在云防火墙中临时更新白名单。登录认证能区分这两个账号，但仍建议在小范围测试阶段限制来源 IP。
 
@@ -45,20 +45,83 @@ docker compose ps
 docker compose logs --tail=100 api web livekit
 ```
 
-Compose 已将 Web 发布在 `127.0.0.1:8080`，Postgres、Redis、API 只在 Docker 网络中提供服务，LiveKit 映射 UDP 7882。不要改成 `0.0.0.0:8080`。
+Compose 已将 Web 发布在 `127.0.0.1:8080`，Postgres、Redis、API 只在 Docker 网络中提供服务，LiveKit 映射 TCP 7881 ICE 回退和 UDP 7882 媒体端口。不要改成 `0.0.0.0:8080`。
 
 ## 配置 HTTPS 反代
 
-在 VPS 主机安装 Caddy，确认域名 A 记录已生效、TCP 80/443 可到达 Caddy，将仓库中的 `deploy/Caddyfile.example` 复制到 Caddy 的配置目录，并把 `echo.example.com` 换成自己的域名。校验/加载配置后确认 Caddy 已签发证书。配置核心是：
+以下假设使用 Ubuntu/Debian + systemd，Caddy 二进制已安装在 `/usr/bin/caddy`。命令可从任意目录执行。将示例域名 `chat.example.com` 替换成自己的域名。
 
-```caddyfile
-echo.example.com {
+### 前置条件
+
+1. 为域名添加 A 记录，指向 VPS 公网 IPv4；等待 DNS 生效。若使用 Cloudflare DNS，测试时设为 **DNS only**。
+2. 在云厂商安全组/防火墙允许 TCP 80 和 443 入站，供 Caddy 获取 HTTPS 证书和接收请求；另需允许 UDP 7882 入站供 LiveKit 传输语音，并允许 TCP 7881 作为 ICE 回退。
+3. 确认 Echo Web 已在本机回环地址的 8080 端口运行：
+
+```bash
+cd ~/echo
+docker compose ps
+curl -I http://127.0.0.1:8080
+```
+
+不要为了让 Caddy 访问而把 Web 改为公网监听；Compose 默认发布到 `127.0.0.1:8080` 即可。
+
+### 编写 Caddyfile
+
+```bash
+sudo mkdir -p /etc/caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+chat.example.com {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8080
 }
+EOF
+sudo chmod 755 /etc/caddy
+sudo chmod 644 /etc/caddy/Caddyfile
 ```
 
-Caddy 会代理 HTTP、WebSocket 升级（语音信令、事件和游戏 TCP 中转），并自动提供 HTTPS。LiveKit 的语音媒体随后直接走 UDP 7882，不能只靠 HTTP 反代。
+### 配置 systemd 服务
+
+如果 `systemctl status caddy` 已能找到并显示 Caddy 服务，可跳过本节的服务创建步骤，直接使用现有服务。直接复制二进制安装的 Caddy 通常需要手动创建 systemd unit：
+
+```bash
+getent group caddy >/dev/null || sudo groupadd --system caddy
+id caddy >/dev/null 2>&1 || sudo useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin --comment "Caddy web server" caddy
+sudo install -d -o caddy -g caddy -m 750 /var/lib/caddy
+sudo tee /etc/systemd/system/caddy.service >/dev/null <<'EOF'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+检查配置并启动：
+
+```bash
+sudo /usr/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl daemon-reload
+sudo systemctl enable --now caddy
+sudo systemctl status caddy --no-pager
+sudo journalctl -u caddy --no-pager -n 80
+```
+
+Caddy 会自动申请和续期证书、把 HTTP 跳转到 HTTPS，并反向代理普通 HTTP 和 WebSocket 请求。浏览器访问 `https://chat.example.com`。LiveKit 的语音媒体优先通过 UDP 7882 传输，TCP 7881 提供 ICE 回退，所以 HTTP 反代不能替代这些端口的防火墙规则。
 
 ## 构建连接 VPS 的 Windows 客户端
 
@@ -71,7 +134,7 @@ npm run build:desktop
 
 将构建日志指向的 `dist/windows/<时间>/Echo.exe` 用安全方式发给朋友。每个人安装/运行后进入同一个房间并打开「异地联机」。一人作为 Echo 房主，在魔兽局域网建图，另一人在局域网列表加入。
 
-首次部署后先访问 `https://echo.example.com` 确认页面，再用双人语音验证麦克风、扬声器和 UDP 7882，最后做 Warcraft 1.24e 双机对局。不同阶段分别通过后再开始下一项；“信令连接成功”不能证明 UDP 或游戏流量可用。
+首次部署后先访问 `https://echo.example.com` 确认页面，再用双人语音验证麦克风、扬声器和 UDP 7882（受限网络下也检查 TCP 7881 回退），最后做 Warcraft 1.24e 双机对局。不同阶段分别通过后再开始下一项；“信令连接成功”不能证明 UDP 或游戏流量可用。
 
 ## 更新和备份
 
