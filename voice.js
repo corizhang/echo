@@ -31920,9 +31920,13 @@
     },
     async connect(ticket, preparedAudioTrack) {
       room = new Room({ adaptiveStream: true, dynacast: true, singlePeerConnection: false });
+      const activeRoom = room;
       room.on(RoomEvent.Disconnected, () => {
+        if (room !== activeRoom) return;
         audioTrack = void 0;
+        window.dispatchEvent(new Event("echo:voice-disconnected"));
       });
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => window.dispatchEvent(new CustomEvent("echo:voice-speakers", { detail: speakers.map((speaker) => speaker.identity) })));
       room.on(RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === "audio") attachRemoteAudio(track).catch((error) => console.warn("Could not attach remote audio", error));
       });

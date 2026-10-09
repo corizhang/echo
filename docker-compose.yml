@@ -20,7 +20,6 @@ services:
       PORT: 3000
       DATABASE_URL: postgres://echo:${POSTGRES_PASSWORD}@postgres:5432/echo
       REDIS_URL: redis://redis:6379
-      LIVEKIT_URL: ws://localhost:8080
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     depends_on:

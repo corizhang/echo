@@ -1,17 +1,25 @@
 (() => {
   if (location.protocol === 'file:') return
+  const base = window.EchoDesktop ? window.EchoServerUrl : location.origin
   const listeners = new Map()
+  const ROOM_STORAGE_KEY = 'echo.game-room.v1'
+  const readRoomState = () => { try { return JSON.parse(localStorage.getItem(ROOM_STORAGE_KEY) || '{}') } catch { return {} } }
+  const writeRoomState = (state) => localStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify(state))
   const request = async (path, options = {}) => {
-    const response = await fetch(`/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
+    const roomId = path.match(/^\/game-rooms\/([^/]+)/)?.[1]
+    const roomState = readRoomState()
+    const roomToken = roomId && roomState.sessions?.[decodeURIComponent(roomId)]
+    const response = await fetch(`${base}/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(roomToken ? { 'X-Echo-Game-Session': roomToken } : {}), ...options.headers } })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(body.error || `请求失败 (${response.status})`)
+    if (!response.ok) { const error = new Error(body.error || `请求失败 (${response.status})`); error.status = response.status; throw error }
     return body
   }
   const emit = (event) => { for (const listener of listeners.get(event.type) || []) listener(event.data) }
   let socket, retryTimer, stopped = false
   function connectEvents() {
     if (stopped) return
-    socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/events`)
+    socket = new WebSocket(`${base.replace(/^http/, 'ws')}/api/v1/events`)
+    socket.onopen = () => emit({ type: 'connection.restored', data: {} })
     socket.onmessage = ({ data }) => { try { emit(JSON.parse(data)) } catch (error) { console.warn('Invalid event', error) } }
     socket.onclose = () => { if (!stopped) retryTimer = setTimeout(connectEvents, 2500) }
   }
@@ -19,6 +27,7 @@
 
   window.EchoApi = {
     mode: 'http',
+    getGameRelayTicket: (id) => request(`/game-rooms/${encodeURIComponent(id)}/relay-ticket`, { method: 'POST' }),
     getMe: () => request('/me'),
     getServers: () => request('/servers'),
     getChannels: (serverId) => request(`/servers/${encodeURIComponent(serverId)}/channels`),
@@ -30,6 +39,29 @@
     togglePin: (messageId) => request(`/messages/${encodeURIComponent(messageId)}/pin`, { method: 'PUT' }),
     getVoiceToken: (channelId) => request('/voice/token', { method: 'POST', body: JSON.stringify({ channelId }) }),
     setVoicePresence: (channelId, connected) => request('/voice/presence', { method: 'POST', body: JSON.stringify({ channelId, connected }) }),
+    listGameRooms: (serverId) => request(`/servers/${encodeURIComponent(serverId)}/game-rooms`),
+    previewGameRoom: (roomId, inviteCode) => request(`/game-rooms/${encodeURIComponent(roomId)}/preview`, { method: 'POST', body: JSON.stringify({ inviteCode }) }),
+    hasGameSession: (roomId) => Boolean(readRoomState().sessions?.[roomId]),
+    forgetGameSession(roomId) { const state = readRoomState(); delete state.sessions?.[roomId]; delete state.invites?.[roomId]; if (state.activeRoomId === roomId) state.activeRoomId = null; writeRoomState(state) },
+    getGameMessages: (roomId) => request(`/game-rooms/${encodeURIComponent(roomId)}/messages`),
+    sendGameMessage: (roomId, content) => request(`/game-rooms/${encodeURIComponent(roomId)}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+    async createGameInvite(roomId) { const result = await request(`/game-rooms/${encodeURIComponent(roomId)}/invite`, { method: 'POST' }); const state = readRoomState(); state.invites ||= {}; state.invites[roomId] = result.inviteCode; writeRoomState(state); return result.inviteCode },
+    getActiveGameRoomId: () => readRoomState().activeRoomId || null,
+    async createGameRoom(serverId, input) {
+      const result = await request(`/servers/${encodeURIComponent(serverId)}/game-rooms`, { method: 'POST', body: JSON.stringify(input) })
+      const state = readRoomState(); state.activeRoomId = result.room.id; state.sessions ||= {}; state.sessions[result.room.id] = result.sessionToken; state.invites ||= {}; state.invites[result.room.id] = result.inviteCode; state.members ||= {}; state.members[result.room.id] = result.room.hostMemberId; writeRoomState(state)
+      return { ...result.room, currentMemberId: result.room.hostMemberId, role: 'host' }
+    },
+    async joinGameRoom(roomId, inviteCode, displayName) {
+      const result = await request(`/game-rooms/${encodeURIComponent(roomId)}/join`, { method: 'POST', body: JSON.stringify({ inviteCode, displayName }) })
+      const state = readRoomState(); state.activeRoomId = result.room.id; state.sessions ||= {}; state.sessions[result.room.id] = result.sessionToken; state.members ||= {}; state.members[result.room.id] = result.memberId; writeRoomState(state)
+      return { ...result.room, currentMemberId: result.memberId, role: result.role }
+    },
+    async getGameRoom(roomId) { const result = await request(`/game-rooms/${encodeURIComponent(roomId)}`); return { ...result.room, currentMemberId: result.memberId, role: result.role } },
+    getGameInviteCode: (roomId) => readRoomState().invites?.[roomId] || null,
+    async setGameMemberStatus(roomId, memberStatus, roomStatus) { const result = await request(`/game-rooms/${encodeURIComponent(roomId)}/status`, { method: 'PUT', body: JSON.stringify({ memberStatus, roomStatus }) }); return { ...result.room, currentMemberId: result.memberId, role: result.role } },
+    async leaveGameRoom(roomId, endRoom = false) { const result = await request(`/game-rooms/${encodeURIComponent(roomId)}/leave`, { method: 'POST', body: JSON.stringify({ endRoom }) }); const state = readRoomState(); delete state.sessions?.[roomId]; delete state.invites?.[roomId]; if (state.activeRoomId === roomId) state.activeRoomId = null; writeRoomState(state); return result },
+    getGameVoiceToken: (roomId) => request(`/game-rooms/${encodeURIComponent(roomId)}/voice-token`, { method: 'POST' }),
     subscribe(type, listener) { listeners.set(type, listeners.get(type) || new Set()); listeners.get(type).add(listener); return () => listeners.get(type)?.delete(listener) },
     close() { stopped = true; clearTimeout(retryTimer); socket?.close() },
   }

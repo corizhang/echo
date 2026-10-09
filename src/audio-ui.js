@@ -199,6 +199,6 @@
   navigator.mediaDevices?.addEventListener?.('devicechange', () => refreshDevices().catch(() => {}))
 
   function closeSettings() { dialog.hidden = true; stopMicTest(); stopSpeakerTest() }
-  window.EchoAudio = { getInputDeviceId: () => preferences.inputDeviceId || 'default', getOutputDeviceId: () => preferences.outputDeviceId || 'default', refreshDevices }
+  window.EchoAudio = { stopTests: () => { stopMicTest(); stopSpeakerTest() }, getInputDeviceId: () => preferences.inputDeviceId || 'default', getOutputDeviceId: () => preferences.outputDeviceId || 'default', refreshDevices }
   refreshDevices().catch(() => {})
 })()

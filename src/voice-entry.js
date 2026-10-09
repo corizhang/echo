@@ -36,7 +36,9 @@ window.EchoVoice = {
     // after creating its initial offer. Some Chromium builds reject that transition.
     // Use the SDK's compatible dual-PC/V0 path for self-hosted LiveKit.
     room = new Room({ adaptiveStream: true, dynacast: true, singlePeerConnection: false })
-    room.on(RoomEvent.Disconnected, () => { audioTrack = undefined })
+    const activeRoom = room
+    room.on(RoomEvent.Disconnected, () => { if (room !== activeRoom) return; audioTrack = undefined; window.dispatchEvent(new Event('echo:voice-disconnected')) })
+    room.on(RoomEvent.ActiveSpeakersChanged, speakers => window.dispatchEvent(new CustomEvent('echo:voice-speakers', { detail: speakers.map(speaker => speaker.identity) })))
     room.on(RoomEvent.TrackSubscribed, (track) => { if (track.kind === 'audio') attachRemoteAudio(track).catch((error) => console.warn('Could not attach remote audio', error)) })
     room.on(RoomEvent.TrackUnsubscribed, (track) => { if (track.kind === 'audio') detachRemoteAudio(track) })
     try {
