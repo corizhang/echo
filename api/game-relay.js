@@ -41,6 +41,7 @@ export function createGameRelay(db) {
       rttMs: peer.rttMs ?? null,
       jitterMs: peer.jitterMs ?? null,
       missedPongs: peer.missedPongs || 0,
+      rttHistory: peer.rttHistory || [],
     }))
     for (const peer of room.peers.values()) json(peer, { type: 'network', peers })
   }
@@ -57,9 +58,11 @@ export function createGameRelay(db) {
     const now = performance.now()
     for (const ws of wss.clients) {
       if (!ws.roomId) continue
-      const samples = ws.rttSamples.splice(0).sort((a, b) => a - b)
+      const windowStart = Date.now() - 5 * 60 * 1000
+      const samples = (ws.rttHistory || []).filter(sample => sample.at >= windowStart).map(sample => sample.rttMs).sort((a, b) => a - b)
       const missedPongs = ws.missedPongs || 0
       console.info('Relay network diagnostic window', {
+        windowSeconds: 300,
         roomId: ws.roomId,
         memberId: ws.memberId,
         role: ws.isHost ? 'host' : 'guest',
@@ -67,9 +70,12 @@ export function createGameRelay(db) {
         rttMs: samples.length ? {
           min: samples[0],
           median: percentile(samples, 0.5),
-          p95: percentile(samples, 0.95),
+          p95: samples.length >= 40 ? percentile(samples, 0.95) : null,
           max: samples[samples.length - 1],
         } : null,
+        p95Status: samples.length >= 40 ? 'ready' : 'collecting-at-least-40-samples',
+        rttSamples: samples.length,
+        recentRttSamples: (ws.rttHistory || []).filter(sample => sample.at >= windowStart).slice(-12),
         jitterMs: ws.jitterMs ?? null,
         lastPongAgeMs: ws.lastPongAt === undefined ? null : Math.round(now - ws.lastPongAt),
         missedPongsWindow: missedPongs - (ws.lastReportedMissedPongs || 0),
@@ -83,7 +89,7 @@ export function createGameRelay(db) {
   diagnosticsTimer.unref()
   wss.on('connection', ws => {
     ws.pendingPings = new Map()
-    ws.rttSamples = []
+    ws.rttHistory = []
     ws.missedPongs = 0
     ws.consecutiveMissedPongs = 0
     ws.on('pong', data => {
@@ -98,7 +104,9 @@ export function createGameRelay(db) {
       } else ws.jitterMs = 0
       ws.rttMs = rtt
       ws.lastPongAt = performance.now()
-      ws.rttSamples.push(rtt)
+      const at = Date.now()
+      ws.rttHistory.push({ at, rttMs: rtt, pingId: key })
+      ws.rttHistory = ws.rttHistory.filter(sample => at - sample.at <= 5 * 60 * 1000).slice(-60)
       ws.consecutiveMissedPongs = 0
       const room = rooms.get(ws.roomId)
       if (room) publishNetwork(room)

@@ -1,4 +1,4 @@
-use std::{sync::{Arc, Mutex}, time::{Duration, Instant}};
+use std::{sync::{Arc, Mutex}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream, UdpSocket}, sync::oneshot};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
@@ -11,6 +11,22 @@ pub struct PeerNetwork {
     rtt_ms: Option<u64>,
     jitter_ms: Option<u64>,
     missed_pongs: u64,
+    #[serde(default)]
+    rtt_history: Vec<NetworkSample>,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct NetworkSample {
+    at: u64,
+    rtt_ms: u64,
+    ping_id: String,
+}
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct ClientPingSample {
+    at: u64,
+    ping_id: String,
+    processing_ms: f64,
 }
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all="camelCase")]
@@ -18,9 +34,10 @@ pub struct RelayStatus {
     room_id: String, phase: String, role: String, detail: String,
     peers: usize, advertisements: u64, sent_bytes: u64, received_bytes: u64, local_port: u16,
     peer_network: Vec<PeerNetwork>,
+    client_ping_samples: Vec<ClientPingSample>,
 }
 impl Default for RelayStatus {
-    fn default() -> Self { Self { room_id: String::new(), phase: "idle".into(), role: String::new(), detail: "尚未开启联机".into(), peers: 0, advertisements: 0, sent_bytes: 0, received_bytes: 0, local_port: 0, peer_network: Vec::new() } }
+    fn default() -> Self { Self { room_id: String::new(), phase: "idle".into(), role: String::new(), detail: "尚未开启联机".into(), peers: 0, advertisements: 0, sent_bytes: 0, received_bytes: 0, local_port: 0, peer_network: Vec::new(), client_ping_samples: Vec::new() } }
 }
 #[derive(Default)]
 pub struct Relay {
@@ -107,6 +124,7 @@ async fn run(status: Arc<Mutex<RelayStatus>>, ticket: String, mut stop: oneshot:
     let mut udp_buf = [0u8;2049]; let mut tcp_buf = [0u8;32768];
     let search = [0xf7,0x2f,16,0,b'P',b'X',b'3',b'W',24,0,0,0,0,0,0,0];
     let mut last_message = Instant::now();
+    let mut last_ping_summary = Instant::now();
     let result: Result<(), String> = async {
         loop {
             tokio::select! {
@@ -168,7 +186,30 @@ async fn run(status: Arc<Mutex<RelayStatus>>, ticket: String, mut stop: oneshot:
                     let message = incoming.ok_or("中转连接已断开")?.map_err(|e|e.to_string())?;
                     last_message = Instant::now();
                     match message {
-                        Message::Ping(p) => send(&mut sink, Message::Pong(p)).await?,
+                        Message::Ping(p) => {
+                            let started = Instant::now();
+                            let ping_id = p.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+                            send(&mut sink, Message::Pong(p)).await?;
+                            let processing_ms = started.elapsed().as_secs_f64() * 1000.0;
+                            let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                            let (summary, slow) = {
+                                let mut state = status.lock().unwrap();
+                                state.client_ping_samples.push(ClientPingSample { at, ping_id: ping_id.clone(), processing_ms });
+                                if state.client_ping_samples.len() > 60 { state.client_ping_samples.remove(0); }
+                                let recent: Vec<_> = state.client_ping_samples.iter().filter(|sample| at.saturating_sub(sample.at) <= 30000).collect();
+                                let mut sorted: Vec<f64> = recent.iter().map(|sample| sample.processing_ms).collect();
+                                sorted.sort_by(f64::total_cmp);
+                                let report = if last_ping_summary.elapsed() >= Duration::from_secs(30) {
+                                    last_ping_summary = Instant::now();
+                                    let median = if sorted.is_empty() { 0.0 } else { sorted[sorted.len() / 2] };
+                                    let max = recent.iter().max_by(|a, b| a.processing_ms.total_cmp(&b.processing_ms));
+                                    Some(format!("windowSamples={} medianMs={median:.3} maxMs={:.3} maxPingId={}", recent.len(), max.map_or(0.0, |sample| sample.processing_ms), max.map_or("none", |sample| sample.ping_id.as_str())))
+                                } else { None };
+                                (report, processing_ms >= 5.0)
+                            };
+                            if let Some(summary) = summary { diagnostics::info("relay_ping", &summary); }
+                            if slow { diagnostics::info("relay_ping_slow", &format!("pingId={ping_id}; processingMs={processing_ms:.3}")); }
+                        },
                         Message::Pong(_) => {},
                         Message::Close(reason) => break Err(format!("中转连接已关闭：{}",reason.map(|r|r.reason.to_string()).unwrap_or_default())),
                         Message::Text(text) => {
