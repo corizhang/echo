@@ -127,7 +127,9 @@ export function createGameRelay(db) {
   const timer = setInterval(async () => {
     for (const ws of wss.clients) {
       if (ws.readyState !== 1) continue
-      const now = Date.now()
+      // `sentAt` is recorded with performance.now(); keep expiry on the same
+      // monotonic clock so wall-clock epoch time cannot expire every ping.
+      const now = performance.now()
       for (const [key, sentAt] of ws.pendingPings) {
         if (now - sentAt < 15000) continue
         ws.pendingPings.delete(key)
