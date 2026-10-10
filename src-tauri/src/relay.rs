@@ -2,15 +2,25 @@ use std::{sync::{Arc, Mutex}, time::{Duration, Instant}};
 use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream, UdpSocket}, sync::oneshot};
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
+use crate::diagnostics;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PeerNetwork {
+    role: String,
+    rtt_ms: Option<u64>,
+    jitter_ms: Option<u64>,
+    missed_pongs: u64,
+}
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct RelayStatus {
     room_id: String, phase: String, role: String, detail: String,
     peers: usize, advertisements: u64, sent_bytes: u64, received_bytes: u64, local_port: u16,
+    peer_network: Vec<PeerNetwork>,
 }
 impl Default for RelayStatus {
-    fn default() -> Self { Self { room_id: String::new(), phase: "idle".into(), role: String::new(), detail: "尚未开启联机".into(), peers: 0, advertisements: 0, sent_bytes: 0, received_bytes: 0, local_port: 0 } }
+    fn default() -> Self { Self { room_id: String::new(), phase: "idle".into(), role: String::new(), detail: "尚未开启联机".into(), peers: 0, advertisements: 0, sent_bytes: 0, received_bytes: 0, local_port: 0, peer_network: Vec::new() } }
 }
 #[derive(Default)]
 pub struct Relay {
@@ -25,17 +35,25 @@ fn update(s: &Arc<Mutex<RelayStatus>>, phase: &str, detail: &str) {
 pub fn relay_status(state: tauri::State<Mutex<Relay>>) -> RelayStatus { state.lock().unwrap().status.lock().unwrap().clone() }
 #[tauri::command]
 pub fn start_relay(state: tauri::State<Mutex<Relay>>, room_id: String, ticket: String) -> Result<(), String> {
-    if ticket.len() > 128 || ticket.len() < 32 || room_id.len() > 100 { return Err("无效的房间凭据".into()); }
+    diagnostics::info("start_relay", &format!("command received; room_id={room_id}"));
+    if ticket.len() > 128 || ticket.len() < 32 || room_id.len() > 100 {
+        diagnostics::error("start_relay", "rejected invalid room credentials");
+        return Err("无效的房间凭据".into());
+    }
     let mut relay = state.lock().unwrap();
-    if relay.task.as_ref().is_some_and(|t| !t.inner().is_finished()) { return Err("请先断开当前联机通道".into()); }
+    if relay.task.as_ref().is_some_and(|t| !t.inner().is_finished()) {
+        diagnostics::error("start_relay", "rejected because another relay task is running");
+        return Err("请先断开当前联机通道".into());
+    }
     let status = Arc::new(Mutex::new(RelayStatus { room_id, phase: "connecting".into(), detail: "正在连接中转服务".into(), ..Default::default() }));
     let (tx, rx) = oneshot::channel(); relay.stop = Some(tx); relay.status = status.clone();
     relay.task = Some(tauri::async_runtime::spawn(async move {
         match run(status.clone(), ticket, rx).await {
-            Ok(()) => update(&status, "idle", "联机通道已关闭"),
-            Err(error) => update(&status, "error", &error),
+            Ok(()) => { diagnostics::info("relay_task", "relay stopped normally"); update(&status, "idle", "联机通道已关闭"); },
+            Err(error) => { diagnostics::error("relay_task", &error); update(&status, "error", &error); },
         }
     }));
+    diagnostics::info("start_relay", "relay task spawned");
     Ok(())
 }
 #[tauri::command]
@@ -62,19 +80,23 @@ fn game_info(p: &[u8]) -> Option<u16> {
     (6112..=6119).contains(&port).then_some(port)
 }
 async fn run(status: Arc<Mutex<RelayStatus>>, ticket: String, mut stop: oneshot::Receiver<()>) -> Result<(), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let base = option_env!("ECHO_SERVER_URL").unwrap_or("http://localhost:8080").trim_end_matches('/');
     let endpoint = format!("{}/api/v1/game-relay", base.replacen("http", "ws", 1));
+    diagnostics::info("relay", &format!("connecting to {endpoint}"));
     let mut config = WebSocketConfig::default(); config.max_message_size = Some(65536); config.max_frame_size = Some(65536);
     let connect = tokio_tungstenite::connect_async_with_config(&endpoint, Some(config), true);
-    let (ws, _) = tokio::select! {
+    let (ws, response) = tokio::select! {
         _ = &mut stop => return Ok(()),
         result = tokio::time::timeout(Duration::from_secs(10), connect) => result.map_err(|_| "中转连接超时")?.map_err(|e| format!("无法连接中转服务：{e}"))?,
     };
+    diagnostics::info("relay", &format!("websocket handshake completed; http_status={}", response.status()));
     let (mut sink, mut source) = ws.split();
     send(&mut sink, Message::Text(serde_json::json!({"ticket":ticket}).to_string().into())).await?;
     let udp = UdpSocket::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
     let proxy_port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    diagnostics::info("relay", &format!("local UDP and TCP proxy sockets bound; tcp_port={proxy_port}"));
     status.lock().unwrap().local_port = proxy_port;
     let mut host = false; let mut ready = false;
     let mut advertisement: Option<(Vec<u8>, Instant)> = None;
@@ -147,6 +169,7 @@ async fn run(status: Arc<Mutex<RelayStatus>>, ticket: String, mut stop: oneshot:
                     last_message = Instant::now();
                     match message {
                         Message::Ping(p) => send(&mut sink, Message::Pong(p)).await?,
+                        Message::Pong(_) => {},
                         Message::Close(reason) => break Err(format!("中转连接已关闭：{}",reason.map(|r|r.reason.to_string()).unwrap_or_default())),
                         Message::Text(text) => {
                             let v: serde_json::Value = serde_json::from_str(&text).map_err(|e|e.to_string())?;
@@ -154,9 +177,15 @@ async fn run(status: Arc<Mutex<RelayStatus>>, ticket: String, mut stop: oneshot:
                                 Some("ready") => {
                                     host = v["role"]=="host"; ready = true;
                                     status.lock().unwrap().role = if host {"host"} else {"guest"}.into();
+                                    diagnostics::info("relay", &format!("server marked relay ready; role={}", if host {"host"} else {"guest"}));
                                     update(&status,"waiting",if host {"中转已连接，请在魔兽局域网中创建对局"} else {"中转已连接，等待房主的局域网对局"});
                                 },
                                 Some("peers") => status.lock().unwrap().peers = v["count"].as_u64().unwrap_or(0) as usize,
+                                Some("network") => {
+                                    if let Ok(peers) = serde_json::from_value::<Vec<PeerNetwork>>(v["peers"].clone()) {
+                                        status.lock().unwrap().peer_network = peers;
+                                    }
+                                },
                                 Some("advertisement") if ready && !host => {
                                     let mut p: Vec<u8> = serde_json::from_value(v["packet"].clone()).map_err(|e|e.to_string())?;
                                     if game_info(&p).is_none() { continue; }

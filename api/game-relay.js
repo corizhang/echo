@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws'
 import { randomBytes, createHash } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 
 // Single API instance, two-player experimental relay. No client-supplied targets.
 export function createGameRelay(db) {
@@ -23,15 +24,45 @@ export function createGameRelay(db) {
   async function reconcile(roomId) {
     const room = rooms.get(roomId); if (!room) return
     for (const ws of [...room.peers.values()]) {
-      const current = await member(roomId, ws.memberId)
+      let current
+      try { current = await member(roomId, ws.memberId) }
+      catch (error) {
+        console.error('Relay membership check failed; retaining active peer for retry', { roomId, memberId: ws.memberId, error: error.message })
+        continue
+      }
       if (!current || (current.role === 'host') !== ws.isHost) ws.close(1008, 'Room membership changed')
     }
   }
+  function publishNetwork(room) {
+    const peers = [...room.peers.values()].map(peer => ({
+      role: peer.isHost ? 'host' : 'guest',
+      rttMs: peer.rttMs ?? null,
+      jitterMs: peer.jitterMs ?? null,
+      missedPongs: peer.missedPongs || 0,
+    }))
+    for (const peer of room.peers.values()) json(peer, { type: 'network', peers })
+  }
   wss.on('connection', ws => {
-    ws.alive = true; ws.on('pong', () => { ws.alive = true })
+    ws.pendingPings = new Map()
+    ws.missedPongs = 0
+    ws.consecutiveMissedPongs = 0
+    ws.on('pong', data => {
+      const key = Buffer.from(data).toString('hex')
+      const sentAt = ws.pendingPings.get(key)
+      if (sentAt === undefined) return
+      ws.pendingPings.delete(key)
+      const rtt = Math.max(0, Math.round(performance.now() - sentAt))
+      if (ws.rttMs !== undefined) {
+        const difference = Math.abs(rtt - ws.rttMs)
+        ws.jitterMs = ws.jitterMs === undefined ? difference : Math.round(ws.jitterMs * 0.875 + difference * 0.125)
+      } else ws.jitterMs = 0
+      ws.rttMs = rtt
+      ws.consecutiveMissedPongs = 0
+      const room = rooms.get(ws.roomId)
+      if (room) publishNetwork(room)
+    })
     const authTimeout = setTimeout(() => ws.close(1008, 'Authentication required'), 5000)
     let authenticating = false, joined = false, windowStart = Date.now(), bytes = 0, frames = 0
-    ws.on('error', () => {})
     ws.on('message', async (data, binary) => {
       try {
         if (!joined) {
@@ -50,6 +81,7 @@ export function createGameRelay(db) {
           room.peers.set(ws.memberId, ws); joined = true; clearTimeout(authTimeout)
           json(ws, { type: 'ready', role: isHost ? 'host' : 'guest' })
           for (const peer of room.peers.values()) json(peer, { type: 'peers', count: room.peers.size })
+          publishNetwork(room)
           return
         }
         if (Date.now() - windowStart > 1000) { windowStart = Date.now(); bytes = 0; frames = 0 }
@@ -75,10 +107,15 @@ export function createGameRelay(db) {
         } else if (room.stream !== id) return // Ignore an already closed stream.
         if (kind === 3) room.stream = 0
         send(other, data, true)
-      } catch { ws.close(1008, 'Invalid relay request') }
+      } catch (error) {
+        console.error('Relay request rejected', { roomId: ws.roomId, memberId: ws.memberId, error: error.message })
+        ws.close(1008, 'Invalid relay request')
+      }
     })
-    ws.on('close', () => {
+    ws.on('error', error => console.warn('Relay WebSocket error', { roomId: ws.roomId, memberId: ws.memberId, error: error.message }))
+    ws.on('close', (code, reason) => {
       clearTimeout(authTimeout)
+      console.warn('Relay peer disconnected', { roomId: ws.roomId, memberId: ws.memberId, role: ws.isHost ? 'host' : 'guest', code, reason: reason.toString(), rttMs: ws.rttMs ?? null, missedPongs: ws.missedPongs || 0 })
       if (!joined) return
       const room = rooms.get(ws.roomId); if (!room) return
       room.peers.delete(ws.memberId); room.stream = 0
@@ -88,9 +125,31 @@ export function createGameRelay(db) {
     })
   })
   const timer = setInterval(async () => {
-    for (const ws of wss.clients) { if (!ws.alive) ws.terminate(); else { ws.alive = false; ws.ping() } }
-    for (const id of rooms.keys()) { try { await reconcile(id) } catch { for (const ws of rooms.get(id)?.peers.values() || []) ws.close(1011, 'Membership check failed') } }
-  }, 10000)
+    for (const ws of wss.clients) {
+      if (ws.readyState !== 1) continue
+      const now = Date.now()
+      for (const [key, sentAt] of ws.pendingPings) {
+        if (now - sentAt < 15000) continue
+        ws.pendingPings.delete(key)
+        ws.missedPongs++
+        ws.consecutiveMissedPongs++
+      }
+      if (ws.consecutiveMissedPongs >= 3) {
+        console.warn('Relay peer missed three heartbeat windows', { roomId: ws.roomId, memberId: ws.memberId, missedPongs: ws.missedPongs })
+        ws.terminate()
+        continue
+      }
+      const payload = randomBytes(8)
+      const key = payload.toString('hex')
+      ws.pendingPings.set(key, performance.now())
+      if (ws.pendingPings.size > 8) ws.pendingPings.delete(ws.pendingPings.keys().next().value)
+      ws.ping(payload, false, error => { if (error) console.warn('Relay heartbeat send failed', { roomId: ws.roomId, memberId: ws.memberId, error: error.message }) })
+    }
+    for (const id of rooms.keys()) {
+      try { await reconcile(id) }
+      catch (error) { console.error('Relay membership reconciliation failed; keeping active peers', { roomId: id, error: error.message }) }
+    }
+  }, 5000)
   timer.unref()
   return { issue, reconcile, upgrade: (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws)) }
 }

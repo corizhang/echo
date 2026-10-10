@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{path::PathBuf, process::{Child, Command}, sync::Mutex};
 mod discovery;
+mod diagnostics;
 mod relay;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -50,12 +51,21 @@ fn save_game(app: &tauri::AppHandle, game: &mut Game, path: PathBuf) -> Result<S
 }
 #[tauri::command]
 fn launch_game(state: tauri::State<Mutex<Game>>) -> Result<Status, String> {
+    diagnostics::info("launch_game", "launch requested");
     let mut game = state.lock().map_err(|e| e.to_string())?;
     if status(&mut game)?.running { return status(&mut game); }
     let path = game.path.clone().ok_or("请先选择游戏程序")?;
     validate(&path)?;
-    game.child = Some(Command::new(&path).current_dir(path.parent().unwrap()).spawn().map_err(|e| format!("启动失败：{e}"))?);
+    game.child = Some(Command::new(&path).current_dir(path.parent().unwrap()).spawn().map_err(|e| {
+        diagnostics::error("launch_game", &format!("process spawn failed: {e}"));
+        format!("启动失败：{e}")
+    })?);
+    diagnostics::info("launch_game", "process started");
     status(&mut game)
+}
+#[tauri::command]
+fn write_client_log(message: String) {
+    diagnostics::client_message(&message);
 }
 fn main() {
     tauri::Builder::default()
@@ -63,11 +73,14 @@ fn main() {
         .manage(discovery::Search::default())
         .manage(Mutex::new(relay::Relay::default()))
         .setup(|app| {
+            let config_dir = app.path().app_config_dir().map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+            diagnostics::initialize(config_dir).map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            diagnostics::info("startup", &format!("Echo desktop started; debug_build={}", cfg!(debug_assertions)));
             let path = app.path().app_config_dir().ok().and_then(|p| std::fs::read(p.join("game.json")).ok()).and_then(|v| serde_json::from_slice::<PathBuf>(&v).ok());
             app.manage(Mutex::new(Game { path, child: None }));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![game_status, choose_game, launch_game, discovery::search_game, discovery::scan_status, discovery::cancel_scan, discovery::select_search_result, relay::start_relay, relay::stop_relay, relay::relay_status])
+        .invoke_handler(tauri::generate_handler![game_status, choose_game, launch_game, write_client_log, discovery::search_game, discovery::scan_status, discovery::cancel_scan, discovery::select_search_result, relay::start_relay, relay::stop_relay, relay::relay_status])
         .run(tauri::generate_context!())
         .expect("无法启动 Echo");
 }
