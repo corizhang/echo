@@ -87,6 +87,8 @@ type Member = User & { activity?: string; voiceChannelId?: string | null }
 
 `WS /api/v1/game-relay` 首帧为 JSON `{ ticket }`。票据仅使用一次。认证成功返回 `{ type: "ready", role: "host" | "guest" }`，以及 `{ type: "peers", count }`。
 
+API 每 5 秒发送 `{ type: "ping", pingId }` 应用层心跳，客户端返回 `{ type: "pong", pingId }`。心跳通过 WSS 或 QUIC 适配器转发至真实桌面客户端后再回到 API，以统一测量两个传输路径的端到端 RTT。QUIC 客户端首个双向流承载与 WSS 一致的认证 JSON；之后以长度前缀帧转发 WebSocket 文本/二进制消息，QUIC relay 再连接内部 API WebSocket。公网 QUIC 端口默认 UDP 40000。
+
 房主发送 `{ type: "advertisement", packet: number[] }`，服务端仅转发至同房间的一位加入者。二进制帧为 `kind:u8 + streamId:u32le + payload`：1 打开（仅加入者），2 数据（最多 32768 字节），3 关闭。一个房间只支持一个游戏流。
 
 房间生命周期约束、部署和验收边界见 `warcraft-relay.md`。

@@ -148,3 +148,24 @@ npm run build:desktop
 - 与另一台真实 Windows 电脑验证 1.24e 局域网发现、TCP 入房、加载地图和完整对局。服务器中转延迟由你和朋友所在地区决定。
 
 公网 HTTPS 由 Caddy 和证书机构提供；VPS、防火墙或 DNS 供应商可能收费。UDP 流量会消耗 VPS 出站流量配额。
+
+## 项目更新后重新拉取
+
+```bash
+cd ~/echo
+git pull --ff-only
+docker compose up -d --build
+docker compose ps
+```
+
+## 启用游戏 QUIC/UDP 中转（可选）
+
+魔兽游戏数据默认仍可经 WSS/TCP 工作。要启用 Windows 客户端优先使用的 QUIC 通道，需要把 Caddy 已签发的域名证书和私钥以只读方式交给 QUIC relay 容器，并在云安全组与系统防火墙开放 UDP 40000。操作细节和证书路径见 [warcraft-relay.md](warcraft-relay.md)。配置 `.env` 中的 `ECHO_QUIC_CERT_FILE`、`ECHO_QUIC_KEY_FILE` 后，用下面命令启动可选服务：
+
+```bash
+docker compose --profile quic up -d --build
+docker compose ps
+docker compose logs --tail=100 game-quic-relay
+```
+
+Windows 客户端在网络诊断面板显示实际传输协议，也可以暂时强制 WSS/TCP 做对照。QUIC 在握手阶段不可用时自动回退 WSS；已开始的对局断线后需要回到游戏重新加入。

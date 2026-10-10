@@ -16,6 +16,8 @@ tokio = { version = "1", features = ["net", "io-util", "sync", "time", "macros",
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util = { version = "0.3", features = ["sink"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls-native-certs = "0.8"
 
 [profile.release]
 lto = true

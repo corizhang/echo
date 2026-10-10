@@ -134,6 +134,28 @@ export function createGameRelay(db) {
           publishNetwork(room)
           return
         }
+        if (!binary) {
+          const control = JSON.parse(data.toString())
+          if (control.type === 'pong' && typeof control.pingId === 'string') {
+            const sentAt = ws.pendingPings.get(control.pingId)
+            if (sentAt === undefined) return
+            ws.pendingPings.delete(control.pingId)
+            const rtt = Math.max(0, Math.round(performance.now() - sentAt))
+            if (ws.rttMs !== undefined) {
+              const difference = Math.abs(rtt - ws.rttMs)
+              ws.jitterMs = ws.jitterMs === undefined ? difference : Math.round(ws.jitterMs * 0.875 + difference * 0.125)
+            } else ws.jitterMs = 0
+            ws.rttMs = rtt
+            ws.lastPongAt = performance.now()
+            const at = Date.now()
+            ws.rttHistory.push({ at, rttMs: rtt, pingId: control.pingId })
+            ws.rttHistory = ws.rttHistory.filter(sample => at - sample.at <= 5 * 60 * 1000).slice(-60)
+            ws.consecutiveMissedPongs = 0
+            const room = rooms.get(ws.roomId)
+            if (room) publishNetwork(room)
+            return
+          }
+        }
         if (Date.now() - windowStart > 1000) { windowStart = Date.now(); bytes = 0; frames = 0 }
         bytes += data.length; frames++
         if (bytes > 2*1024*1024 || frames > 512) return ws.close(1008, 'Relay rate limit')
@@ -195,7 +217,7 @@ export function createGameRelay(db) {
       const key = payload.toString('hex')
       ws.pendingPings.set(key, performance.now())
       if (ws.pendingPings.size > 8) ws.pendingPings.delete(ws.pendingPings.keys().next().value)
-      ws.ping(payload, false, error => { if (error) console.warn('Relay heartbeat send failed', { roomId: ws.roomId, memberId: ws.memberId, error: error.message }) })
+      json(ws, { type: 'ping', pingId: key })
     }
     for (const id of rooms.keys()) {
       try { await reconcile(id) }

@@ -15,6 +15,7 @@
 ## 当前边界
 
 - 这是本地开发桌面版，API 与 WebSocket 默认指向 `http://localhost:8080`。可用 ECHO_SERVER_URL 编译到同一个服务器地址，脚本同时设置 API、中转端点与 CSP。
+- HTTPS 服务器构建的 Windows 客户端优先通过 UDP 40000 连接 QUIC 游戏中转；诊断面板可选自动回退或强制 WSS/TCP 对照。桌面机所在网络需允许出站 UDP；服务端配置见 `warcraft-relay.md`。
 - Windows 客户端会将联机诊断和 Rust panic 写入 `%APPDATA%\app.echo.squad\logs\echo-diagnostics.log`。复现闪退后请保留该文件；日志会记录联机阶段、错误和 panic 位置，不记录房间票据。
 - 安装文件检查不代表版本或文件真实性校验。请使用可信安装，并在游戏内确认 1.24e。现已读取 Game.dll（优先）或 war3.exe 的 Windows 文件版本资源，并显示原始数字版本；无法读取时显示未知。不会把数字版本未经确认地映射成补丁名称。
 - 只跟踪本次启动的 war3.exe；客户端重启后不会识别之前启动的游戏，也不跟踪程序派生的其他进程。

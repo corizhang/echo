@@ -38,6 +38,26 @@ services:
       retries: 12
     networks: [echo]
 
+  game-quic-relay:
+    profiles: ["quic"]
+    build: ./quic-relay
+    container_name: echo-game-quic-relay
+    restart: unless-stopped
+    environment:
+      QUIC_BIND: 0.0.0.0:40000
+      QUIC_CERT_FILE: /run/certs/echo.crt
+      QUIC_KEY_FILE: /run/certs/echo.key
+      ECHO_API_WS_URL: ws://api:3000/api/v1/game-relay
+    ports:
+      - "40000:40000/udp"
+    volumes:
+      - ${ECHO_QUIC_CERT_FILE:-./deploy/quic/echo.crt}:/run/certs/echo.crt:ro
+      - ${ECHO_QUIC_KEY_FILE:-./deploy/quic/echo.key}:/run/certs/echo.key:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [echo]
+
   postgres:
     image: postgres:16-alpine
     container_name: echo-postgres
