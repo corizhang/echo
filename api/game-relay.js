@@ -1,10 +1,12 @@
 import { WebSocketServer } from 'ws'
 import { randomBytes, createHash } from 'node:crypto'
-import { performance } from 'node:perf_hooks'
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
 
 // Single API instance, two-player experimental relay. No client-supplied targets.
 export function createGameRelay(db) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false })
+  const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
+  eventLoopDelay.enable()
   const tickets = new Map(), rooms = new Map()
   const hash = value => createHash('sha256').update(value).digest('hex')
   const send = (ws, data, binary = false) => {
@@ -42,8 +44,46 @@ export function createGameRelay(db) {
     }))
     for (const peer of room.peers.values()) json(peer, { type: 'network', peers })
   }
+  function percentile(values, fraction) {
+    if (!values.length) return null
+    return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)]
+  }
+  const diagnosticsTimer = setInterval(() => {
+    const eventLoop = {
+      p95Ms: Number((eventLoopDelay.percentile(95) / 1e6).toFixed(1)),
+      maxMs: Number((eventLoopDelay.max / 1e6).toFixed(1)),
+    }
+    eventLoopDelay.reset()
+    const now = performance.now()
+    for (const ws of wss.clients) {
+      if (!ws.roomId) continue
+      const samples = ws.rttSamples.splice(0).sort((a, b) => a - b)
+      const missedPongs = ws.missedPongs || 0
+      console.info('Relay network diagnostic window', {
+        roomId: ws.roomId,
+        memberId: ws.memberId,
+        role: ws.isHost ? 'host' : 'guest',
+        sampleCount: samples.length,
+        rttMs: samples.length ? {
+          min: samples[0],
+          median: percentile(samples, 0.5),
+          p95: percentile(samples, 0.95),
+          max: samples[samples.length - 1],
+        } : null,
+        jitterMs: ws.jitterMs ?? null,
+        lastPongAgeMs: ws.lastPongAt === undefined ? null : Math.round(now - ws.lastPongAt),
+        missedPongsWindow: missedPongs - (ws.lastReportedMissedPongs || 0),
+        missedPongsTotal: missedPongs,
+        bufferedAmount: ws.bufferedAmount,
+        eventLoop,
+      })
+      ws.lastReportedMissedPongs = missedPongs
+    }
+  }, 30000)
+  diagnosticsTimer.unref()
   wss.on('connection', ws => {
     ws.pendingPings = new Map()
+    ws.rttSamples = []
     ws.missedPongs = 0
     ws.consecutiveMissedPongs = 0
     ws.on('pong', data => {
@@ -57,6 +97,8 @@ export function createGameRelay(db) {
         ws.jitterMs = ws.jitterMs === undefined ? difference : Math.round(ws.jitterMs * 0.875 + difference * 0.125)
       } else ws.jitterMs = 0
       ws.rttMs = rtt
+      ws.lastPongAt = performance.now()
+      ws.rttSamples.push(rtt)
       ws.consecutiveMissedPongs = 0
       const room = rooms.get(ws.roomId)
       if (room) publishNetwork(room)
