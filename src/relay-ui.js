@@ -4,7 +4,7 @@
   const diagnosticsPanel = document.querySelector('#relay-diagnostics'), chart = document.querySelector('#relay-rtt-chart')
   const diagnosticsSummary = document.querySelector('#relay-diagnostics-summary'), clientPingSummary = document.querySelector('#relay-client-ping-summary')
   const transportMode = document.querySelector('#relay-transport-mode')
-  let room, status = { phase: 'idle' }, busy = false, polling = false
+  let room, desiredRoom = null, pausedRoom = null, attemptedKey = null, status = { phase: 'idle' }, busy = false, polling = false, mutationEpoch = 0
   if (transportMode) transportMode.value = localStorage.getItem('echo-relay-transport-mode') === 'wss' ? 'wss' : 'auto'
   transportMode?.addEventListener('change', () => localStorage.setItem('echo-relay-transport-mode', transportMode.value))
   const active = () => !['idle','error'].includes(status.phase)
@@ -35,10 +35,11 @@
       : '本机心跳处理耗时：等待样本…'
   }
   function render() {
+    window.dispatchEvent(new CustomEvent('echo:relay-status', { detail: status }))
     button.disabled = !invoke || busy || (!active() && !room?.joined)
-    button.textContent = active() ? '断开联机' : '开启联机'
+    button.textContent = busy ? '连接处理中…' : active() ? '暂停联机' : status.phase === 'error' ? '重试连接' : '连接联机'
     if (!invoke) return
-    detail.textContent = active() || status.phase === 'error' ? status.detail : room?.joined ? '中转尚未连接。所有参加游戏的成员开启联机后，由 Echo 房主在游戏内建图。' : '加入房间后才能开启联机。'
+    detail.textContent = active() || status.phase === 'error' ? status.detail : room?.joined ? '加入房间后自动连接中转。已暂停时，点击连接联机恢复。' : '加入房间后才能开启联机。'
     if (active() && room?.id !== status.roomId) detail.textContent = `另一个房间的联机仍在运行。${status.detail}`
     if (!active()) { metrics.textContent = ''; diagnosticsPanel.hidden = !invoke; return }
     const peerNetwork = status.peerNetwork || []
@@ -58,38 +59,77 @@
     }).filter(Boolean)
     const estimate = estimates.length ? ` · 房主至玩家往返估算 ${estimates.join(' / ')}` : ''
     const transport = status.transport === 'quic' ? 'QUIC/UDP' : status.transport === 'wss' ? 'WSS/TCP（回退）' : '连接中'
-    metrics.textContent = `${transport} · ${latency || '正在测量到中转延迟'}${estimate} · 中转端点 ${status.peers}/8 · 对局广播 ${status.advertisements} 次 · 发送 ${(status.sentBytes/1024).toFixed(1)} KB / 接收 ${(status.receivedBytes/1024).toFixed(1)} KB`
+    metrics.textContent = `${transport} · ${latency || '正在测量到中转延迟'}${estimate} · 中转端点 ${status.peers || 0}/8 · 对局广播 ${status.advertisements || 0} 次 · 发送 ${((status.sentBytes || 0)/1024).toFixed(1)} KB / 接收 ${((status.receivedBytes || 0)/1024).toFixed(1)} KB`
     renderDiagnostics(self)
   }
-  window.addEventListener('echo:room-context', event => { room = event.detail; render() })
-  window.addEventListener('echo:room-left', event => { if (invoke && status.roomId === event.detail) invoke('stop_relay').catch(() => {}) })
-  button.onclick = async () => {
-    if (busy || !invoke) return
-    busy = true; render()
-    await diagnostic('button clicked')
+  async function stopRelay() {
+    await invoke('stop_relay')
+    // Native stop signals the worker; wait for sockets to close before starting another room.
+    for (let i = 0; i < 100; i++) {
+      const next = await invoke('relay_status')
+      if (['idle', 'error'].includes(next.phase)) { status = next; return }
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    throw new Error('上一个联机通道仍在关闭，请稍后重试')
+  }
+  // Serialize native mutations. A late ticket must never restart a room already left.
+  async function reconcile() {
+    if (!invoke || busy) return
+    const target = desiredRoom
+    const key = target ? `${target.id}:${target.role}` : null
+    if (target && pausedRoom === target.id) return
+    if (target && active() && status.roomId === target.id && status.role === target.role) return
+    if (target && attemptedKey === key) return
+    if (!target && !active()) return
+    busy = true; mutationEpoch++; render()
     try {
-      if (active()) await invoke('stop_relay')
-      else {
-        const target = room.id
-        await diagnostic('requesting relay ticket')
-        const ticket = await window.EchoApi.getGameRelayTicket(target)
-        await diagnostic('relay ticket received')
-        if (room?.id !== target || !room?.joined) throw new Error('房间已切换，请重新开启联机')
-        await diagnostic('invoking native start_relay')
-        await invoke('start_relay', { roomId: target, ticket: ticket.ticket, transportMode: transportMode?.value || 'auto' })
-        await diagnostic('native start_relay returned')
+      if (active()) await stopRelay()
+      if (target) {
+        attemptedKey = key
+        await diagnostic(`automatic connect room=${target.id} role=${target.role}`)
+        status = { phase: 'connecting', roomId: target.id, role: target.role, detail: '正在连接房间网络…' }; render()
+        const ticket = await window.EchoApi.getGameRelayTicket(target.id)
+        if (desiredRoom?.id !== target.id || desiredRoom?.role !== target.role || pausedRoom === target.id) return
+        await invoke('start_relay', { roomId: target.id, ticket: ticket.ticket, transportMode: transportMode?.value || 'auto' })
+        if (desiredRoom?.id !== target.id || desiredRoom?.role !== target.role) await stopRelay()
       }
       status = await invoke('relay_status')
     } catch (error) {
-      await diagnostic(`operation failed: ${String(error.message || error)}`)
-      window.EchoApp?.toast(String(error.message || error)); detail.textContent = String(error.message || error)
+      const message = String(error.message || error)
+      await diagnostic(`operation failed room=${target?.id} error=${message}`)
+      status = { phase: 'error', roomId: target?.id, role: target?.role, detail: `联机连接失败：${message}。请点击重试连接。` }
+      window.EchoApp?.toast(message)
+    } finally {
+      busy = false; render()
+      if (desiredRoom?.id !== target?.id || desiredRoom?.role !== target?.role) reconcile()
     }
-    finally { busy = false; button.disabled = !invoke || (!active() && !room?.joined); button.textContent = active() ? '断开联机' : '开启联机' }
+  }
+  window.addEventListener('echo:room-context', event => {
+    room = event.detail
+    if (room.joined) { desiredRoom = { ...room, role: room.role === 'host' ? 'host' : 'guest' }; reconcile() }
+    render()
+  })
+  window.addEventListener('echo:room-left', event => {
+    if (desiredRoom?.id === event.detail || status.roomId === event.detail) {
+      desiredRoom = null; pausedRoom = null; attemptedKey = null; reconcile()
+    }
+  })
+  button.onclick = async () => {
+    if (busy || !invoke) return
+    if (active()) {
+      pausedRoom = desiredRoom?.id; busy = true; mutationEpoch++
+      try { await stopRelay() }
+      catch (error) { window.EchoApp?.toast(String(error)) }
+      finally { busy = false; render(); reconcile() }
+    } else if (room?.joined) {
+      desiredRoom = { ...room, role: room.role === 'host' ? 'host' : 'guest' }; pausedRoom = null; attemptedKey = null; reconcile()
+    }
   }
   if (invoke) setInterval(async () => {
     if (polling || busy) return
     polling = true
-    try { status = await invoke('relay_status'); render() } catch (error) { detail.textContent = String(error) }
+    const epoch = mutationEpoch
+    try { const next = await invoke('relay_status'); if (epoch !== mutationEpoch) return; if (!(next.phase === 'idle' && status.phase === 'error')) status = next; render() } catch (error) { detail.textContent = String(error) }
     finally { polling = false }
   }, 1000)
   render()

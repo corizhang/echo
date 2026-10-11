@@ -3,7 +3,7 @@
   const app = window.EchoApp
   const $ = selector => document.querySelector(selector)
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`
-  const state = { rooms: [], room: null, viewing: false, invite: null, epoch: 0, busy: false, focusBeforeDialog: null }
+  const state = { rooms: [], room: null, viewing: false, invite: null, epoch: 0, busy: false, focusBeforeDialog: null, network: null, slotKey: null }
   const text = (tag, value, className) => { const element = document.createElement(tag); element.textContent = value; if (className) element.className = className; return element }
   const joined = () => Boolean(state.room?.currentMemberId)
   const sameVoice = room => { const voice = app.voiceState(); return voice.joined && (voice.roomId === room.id || voice.channelId === room.voiceRoomId) }
@@ -61,19 +61,51 @@
     $('#room-entry').hidden = member; $('#room-membership').hidden = !member
     $('#room-leave').hidden = !member; $('#room-end').hidden = room.role !== 'host'
     $('#game-member-count').textContent = `房间成员 — ${room.members.length}/8`
-    const members = $('#game-member-list'); members.replaceChildren()
-    for (const person of room.members) {
-      const row = document.createElement('div'); row.className = 'room-person'; row.dataset.memberId = person.id
-      row.append(text('div', person.displayName.slice(0,1), 'avatar blue'))
-      const copy = document.createElement('div'); copy.className = 'room-person-copy'
-      copy.append(text('strong', `${person.displayName}${person.id === room.currentMemberId ? ' · 你' : ''}`), text('span', person.role === 'host' ? '房主 · 已加入' : '已加入房间'))
-      row.append(copy); members.append(row)
-    }
+    renderSlots()
     $('#game-message-input').disabled = !member; $('#game-message-form button').disabled = !member
     $('#game-message-input').placeholder = member ? `发送消息到 ${room.title}` : '加入房间后即可聊天'
     renderVoice(); renderList()
     window.dispatchEvent(new CustomEvent('echo:room-context', { detail: { id: room.id, joined: member, role: room.role } }))
   }
+  function renderSlots() {
+    const room = state.room; if (!room) return
+    const network = state.network?.roomId === room.id ? state.network : null
+    const peers = network && !['idle', 'error', 'connecting'].includes(network.phase) ? network.peerNetwork || [] : []
+    const hostRtt = peers.find(peer => peer.memberId === room.hostMemberId)?.rttMs
+    const key = JSON.stringify([room.id, room.members, room.currentMemberId, network?.phase, peers.map(p => [p.memberId, p.rttMs, p.jitterMs, p.missedPongs])])
+    if (state.slotKey === key) return
+    state.slotKey = key
+    const target = $('#game-member-list')
+    const focusedMember = document.activeElement?.closest?.('.room-slot')?.dataset.memberId
+    const expanded = new Set([...target.querySelectorAll('details[open]')].map(node => node.dataset.memberId))
+    target.replaceChildren()
+    $('#room-network-count').textContent = network ? `${peers.length}/${room.members.length} 人已连接中转` : '等待客户端网络状态'
+    for (let i = 0; i < 8; i++) {
+      const person = room.members[i]
+      if (!person) {
+        const slot = document.createElement('div'); slot.className = 'room-slot empty'
+        slot.innerHTML = `${icon('plus')}<strong>等待好友加入</strong>`
+        slot.append(text('span', `空闲槽位 ${i + 1}`)); target.append(slot); continue
+      }
+      const peer = peers.find(item => item.memberId === person.id)
+      const own = person.id === room.currentMemberId
+      const card = document.createElement('details'); card.className = 'room-slot room-person'; card.dataset.memberId = person.id; card.open = expanded.has(person.id)
+      const head = document.createElement('summary')
+      head.append(text('span', String(i + 1).padStart(2, '0'), 'slot-number'), text('div', person.displayName.slice(0,1), 'avatar blue'))
+      const copy = document.createElement('div'); copy.className = 'room-person-copy'
+      copy.append(text('strong', `${person.displayName}${own ? ' · 你' : ''}`), text('span', person.role === 'host' ? '房主' : '房间成员'))
+      head.append(copy)
+      const rtt = peer?.rttMs
+      const label = peer ? (Number.isFinite(rtt) ? `${rtt} ms` : '测量中') : own && network?.phase === 'error' ? '连接失败' : own && network?.phase === 'connecting' ? '连接中' : '尚无数据'
+      head.append(text('span', label, `slot-network ${Number.isFinite(rtt) ? rtt > 200 ? 'slow' : 'good' : ''}`))
+      const info = document.createElement('div'); info.className = 'slot-network-detail'
+      info.append(text('strong', '网络详情'), text('p', peer ? `到中转 RTT：${rtt ?? '测量中'}${rtt == null ? '' : ' ms'} · 抖动：${peer.jitterMs ?? '—'} ms · 心跳超时：${peer.missedPongs ?? 0}` : '尚未收到此成员的联机数据。请在 Windows 客户端加入房间。'))
+      if (person.role !== 'host' && Number.isFinite(rtt) && Number.isFinite(hostRtt)) info.append(text('p', `与房主往返估算：${hostRtt + rtt} ms（非游戏实测）`))
+      card.append(head, info); target.append(card)
+      if (person.id === focusedMember) head.focus({ preventScroll: true })
+    }
+  }
+  window.addEventListener('echo:relay-status', event => { state.network = event.detail; renderSlots() })
   async function renderMessages() {
     const room = state.room; if (!room) return
     const target = $('#game-messages')
@@ -113,7 +145,7 @@
       renderDetail(); await renderMessages()
     } catch (error) {
       if (epoch !== state.epoch) return
-      if ([403,404].includes(error.status)) { api.forgetGameSession(id); if (app.isGameRoomVoice(id)) await app.disconnectVoice(); showOverview() }
+      if ([403,404].includes(error.status)) { window.dispatchEvent(new CustomEvent('echo:room-left', { detail: id })); api.forgetGameSession(id); if (app.isGameRoomVoice(id)) await app.disconnectVoice(); showOverview() }
       displayError(error)
     }
   }
@@ -219,8 +251,8 @@
   api.subscribe('game-room.updated', async ({ roomId }) => {
     try {
       await refreshList()
-      if (!state.rooms.some(room => room.id === roomId) && api.hasGameSession(roomId)) { api.forgetGameSession(roomId); if (app.isGameRoomVoice(roomId)) await app.disconnectVoice(); if (state.room?.id === roomId && state.viewing) { showOverview(); app.toast('房间已结束') } }
-      else if (state.room?.id === roomId && state.viewing && !state.busy) await openRoom(roomId, state.invite?.code, true)
+      if (!state.rooms.some(room => room.id === roomId) && api.hasGameSession(roomId)) { api.forgetGameSession(roomId); window.dispatchEvent(new CustomEvent('echo:room-left', { detail: roomId })); if (app.isGameRoomVoice(roomId)) await app.disconnectVoice(); if (state.room?.id === roomId && state.viewing) { showOverview(); app.toast('房间已结束') } }
+      else if (state.room?.id === roomId && !state.busy) await openRoom(roomId, state.invite?.code, true)
     } catch (error) { displayError(error) }
   })
   api.subscribe('connection.restored', () => { if (app.getSquadId()) { refreshList().catch(displayError); if (state.room && state.viewing) openRoom(state.room.id, state.invite?.code, true) } })
@@ -228,7 +260,7 @@
     await window.EchoAppReady; await refreshList()
     const params = new URLSearchParams(location.hash.slice(1) || location.search)
     if (params.get('war3')) { const id = params.get('war3'); const code = params.get('invite'); history.replaceState({}, '', location.pathname); await openRoom(id, code) }
-    else { const active = api.getActiveGameRoomId(); if (active && !state.rooms.some(room => room.id === active)) api.forgetGameSession(active) }
+    else { const active = api.getActiveGameRoomId(); if (active && !state.rooms.some(room => room.id === active)) api.forgetGameSession(active); else if (active) await openRoom(active) }
   }
   start().catch(displayError)
 })()
