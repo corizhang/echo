@@ -38,21 +38,27 @@
     button.disabled = !invoke || busy || (!active() && !room?.joined)
     button.textContent = active() ? '断开联机' : '开启联机'
     if (!invoke) return
-    detail.textContent = active() || status.phase === 'error' ? status.detail : room?.joined ? '中转尚未连接。双方开启后，由 Echo 房主在游戏内建图。' : '加入房间后才能开启联机。'
+    detail.textContent = active() || status.phase === 'error' ? status.detail : room?.joined ? '中转尚未连接。所有参加游戏的成员开启联机后，由 Echo 房主在游戏内建图。' : '加入房间后才能开启联机。'
     if (active() && room?.id !== status.roomId) detail.textContent = `另一个房间的联机仍在运行。${status.detail}`
     if (!active()) { metrics.textContent = ''; diagnosticsPanel.hidden = !invoke; return }
     const peerNetwork = status.peerNetwork || []
-    const self = peerNetwork.find(peer => peer.role === status.role)
+    const self = peerNetwork.find(peer => peer.isSelf) || peerNetwork.find(peer => peer.role === status.role)
+    let guestNumber = 0
     const latency = peerNetwork.map(peer => {
-      const role = peer.role === 'host' ? '房主' : '加入者'
+      const role = peer.role === 'host' ? '房主' : `加入者${++guestNumber}`
       const rtt = peer.rttMs == null ? '测量中' : `${peer.rttMs} ms`
       const jitter = peer.jitterMs == null ? '—' : `${peer.jitterMs} ms`
       return `${role}到中转 ${rtt}（抖动 ${jitter}，心跳超时 ${peer.missedPongs}）`
     }).join(' · ')
-    const rtts = peerNetwork.filter(peer => Number.isFinite(peer.rttMs)).map(peer => peer.rttMs)
-    const estimate = rtts.length === 2 ? ` · 玩家间网络往返估算约 ${rtts.reduce((sum, value) => sum + value, 0)} ms` : ''
+    const hostRtt = peerNetwork.find(peer => peer.role === 'host')?.rttMs
+    guestNumber = 0
+    const estimates = peerNetwork.filter(peer => peer.role !== 'host').map(peer => {
+      const name = `加入者${++guestNumber}`
+      return Number.isFinite(hostRtt) && Number.isFinite(peer.rttMs) ? `${name}约 ${hostRtt + peer.rttMs} ms` : null
+    }).filter(Boolean)
+    const estimate = estimates.length ? ` · 房主至玩家往返估算 ${estimates.join(' / ')}` : ''
     const transport = status.transport === 'quic' ? 'QUIC/UDP' : status.transport === 'wss' ? 'WSS/TCP（回退）' : '连接中'
-    metrics.textContent = `${transport} · ${latency || '正在测量到中转延迟'}${estimate} · 中转端点 ${status.peers}/2 · 对局广播 ${status.advertisements} 次 · 发送 ${(status.sentBytes/1024).toFixed(1)} KB / 接收 ${(status.receivedBytes/1024).toFixed(1)} KB`
+    metrics.textContent = `${transport} · ${latency || '正在测量到中转延迟'}${estimate} · 中转端点 ${status.peers}/8 · 对局广播 ${status.advertisements} 次 · 发送 ${(status.sentBytes/1024).toFixed(1)} KB / 接收 ${(status.receivedBytes/1024).toFixed(1)} KB`
     renderDiagnostics(self)
   }
   window.addEventListener('echo:room-context', event => { room = event.detail; render() })

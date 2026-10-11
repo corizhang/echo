@@ -89,6 +89,6 @@ type Member = User & { activity?: string; voiceChannelId?: string | null }
 
 API 每 5 秒发送 `{ type: "ping", pingId }` 应用层心跳，客户端返回 `{ type: "pong", pingId }`。心跳通过 WSS 或 QUIC 适配器转发至真实桌面客户端后再回到 API，以统一测量两个传输路径的端到端 RTT。QUIC 客户端首个双向流承载与 WSS 一致的认证 JSON；之后以长度前缀帧转发 WebSocket 文本/二进制消息，QUIC relay 再连接内部 API WebSocket。公网 QUIC 端口默认 UDP 40000。
 
-房主发送 `{ type: "advertisement", packet: number[] }`，服务端仅转发至同房间的一位加入者。二进制帧为 `kind:u8 + streamId:u32le + payload`：1 打开（仅加入者），2 数据（最多 32768 字节），3 关闭。一个房间只支持一个游戏流。
+房主发送 `{ type: "advertisement", packet: number[] }`，服务端转发给同房间所有加入者。二进制帧为 `kind:u8 + streamId:u32le + payload`：1 加入者请求打开流，2 数据（最多 32768 字节），3 关闭，4 服务端返回房间唯一流 ID（头部 ID 是客户端本地流 ID，四字节负载是房间流 ID）。服务端将各加入者的独立 TCP 游戏流映射到房主；每个加入者最多一个活动流，一个房间最多 8 个在线成员（房主加 7 名加入者）。
 
 房间生命周期约束、部署和验收边界见 `warcraft-relay.md`。

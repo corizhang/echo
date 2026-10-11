@@ -2,7 +2,7 @@ import { WebSocketServer } from 'ws'
 import { randomBytes, createHash } from 'node:crypto'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
 
-// Single API instance, two-player experimental relay. No client-supplied targets.
+// Single API instance, small-room multiplayer relay. No client-supplied targets.
 export function createGameRelay(db) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false })
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
@@ -36,14 +36,18 @@ export function createGameRelay(db) {
     }
   }
   function publishNetwork(room) {
-    const peers = [...room.peers.values()].map(peer => ({
-      role: peer.isHost ? 'host' : 'guest',
-      rttMs: peer.rttMs ?? null,
-      jitterMs: peer.jitterMs ?? null,
-      missedPongs: peer.missedPongs || 0,
-      rttHistory: peer.rttHistory || [],
-    }))
-    for (const peer of room.peers.values()) json(peer, { type: 'network', peers })
+    for (const recipient of room.peers.values()) {
+      const peers = [...room.peers.values()].map(peer => ({
+        role: peer.isHost ? 'host' : 'guest',
+        memberId: peer.memberId,
+        isSelf: peer === recipient,
+        rttMs: peer.rttMs ?? null,
+        jitterMs: peer.jitterMs ?? null,
+        missedPongs: peer.missedPongs || 0,
+        rttHistory: peer.rttHistory || [],
+      }))
+      json(recipient, { type: 'network', peers })
+    }
   }
   function percentile(values, fraction) {
     if (!values.length) return null
@@ -124,9 +128,10 @@ export function createGameRelay(db) {
           const current = await member(ticket.roomId, ticket.memberId)
           if (!current || ws.readyState !== 1) return ws.close(1008, 'Room access denied')
           let room = rooms.get(ticket.roomId)
-          if (!room) { room = { peers: new Map(), stream: 0 }; rooms.set(ticket.roomId, room) }
+          if (!room) { room = { peers: new Map(), streams: new Map(), nextStreamId: 0 }; rooms.set(ticket.roomId, room) }
           const isHost = current.role === 'host'
-          if (room.peers.has(ticket.memberId) || [...room.peers.values()].some(p => p.isHost === isHost)) return ws.close(1008, 'Experimental relay supports one host and one guest')
+          const guestCount = [...room.peers.values()].filter(peer => !peer.isHost).length
+          if (room.peers.has(ticket.memberId) || (isHost && [...room.peers.values()].some(peer => peer.isHost)) || (!isHost && guestCount >= 7)) return ws.close(1008, 'Relay room is full or member is already connected')
           Object.assign(ws, { roomId: ticket.roomId, memberId: ticket.memberId, isHost })
           room.peers.set(ws.memberId, ws); joined = true; clearTimeout(authTimeout)
           json(ws, { type: 'ready', role: isHost ? 'host' : 'guest' })
@@ -160,25 +165,58 @@ export function createGameRelay(db) {
         bytes += data.length; frames++
         if (bytes > 2*1024*1024 || frames > 512) return ws.close(1008, 'Relay rate limit')
         const room = rooms.get(ws.roomId); if (!room) return ws.close()
-        const other = [...room.peers.values()].find(p => p !== ws)
         if (!binary) {
           if (!ws.isHost || data.length > 12000) return ws.close(1008, 'Invalid advertisement')
           const m = JSON.parse(data.toString())
           if (m.type !== 'advertisement' || !Array.isArray(m.packet) || m.packet.length < 44 || m.packet.length > 2048 || m.packet.some(x => !Number.isInteger(x) || x < 0 || x > 255)) return ws.close(1008, 'Invalid game packet')
           const p = Buffer.from(m.packet)
           if (p[0] !== 247 || p[1] !== 48 || p.readUInt16LE(2) !== p.length || p.readUInt32LE(8) !== 24) return ws.close(1008, 'Only Warcraft 1.24 discovery supported')
-          json(other, { type: 'advertisement', packet: m.packet }); return
+          for (const peer of room.peers.values()) if (!peer.isHost) json(peer, { type: 'advertisement', packet: m.packet })
+          return
         }
         if (data.length < 5 || data.length > 32773) return ws.close(1008, 'Invalid frame')
         const kind = data[0], id = data.readUInt32LE(1)
-        if (!id || ![1,2,3].includes(kind) || (kind !== 2 && data.length !== 5)) return ws.close(1008, 'Invalid stream')
+        if (!id || ![1,2,3,4].includes(kind) || (kind !== 2 && data.length !== 5)) return ws.close(1008, 'Invalid stream')
         if (kind === 1) {
-          if (ws.isHost || room.stream) return ws.close(1008, 'Only one game connection supported')
-          if (!other) { const close = Buffer.from(data); close[0] = 3; send(ws, close, true); return }
-          room.stream = id
-        } else if (room.stream !== id) return // Ignore an already closed stream.
-        if (kind === 3) room.stream = 0
-        send(other, data, true)
+          if (ws.isHost || [...room.streams.values()].some(stream => stream.guestMemberId === ws.memberId)) return ws.close(1008, 'Member already has an active game stream')
+          const host = [...room.peers.values()].find(peer => peer.isHost)
+          if (!host) { const close = Buffer.from(data); close[0] = 3; send(ws, close, true); return }
+          let streamId
+          do { room.nextStreamId = (room.nextStreamId + 1) >>> 0 || 1; streamId = room.nextStreamId } while (room.streams.has(streamId))
+          room.streams.set(streamId, { guestMemberId: ws.memberId, opened: false })
+          // Assign the ID first. The guest confirms it before the host TCP socket is opened,
+          // preventing early Warcraft handshake bytes from arriving before the guest maps it.
+          const ack = Buffer.alloc(9); ack[0] = 4; ack.writeUInt32LE(id, 1); ack.writeUInt32LE(streamId, 5); send(ws, ack, true)
+          return
+        }
+        if (kind === 4) {
+          if (ws.isHost) return ws.close(1008, 'Only guests can acknowledge a stream')
+          const stream = room.streams.get(id)
+          const host = [...room.peers.values()].find(peer => peer.isHost)
+          if (!stream || stream.guestMemberId !== ws.memberId || stream.opened || !host) return ws.close(1008, 'Invalid stream acknowledgement')
+          stream.opened = true
+          const open = Buffer.alloc(5); open[0] = 1; open.writeUInt32LE(id, 1); send(host, open, true)
+          return
+        }
+        if (ws.isHost) {
+          const stream = room.streams.get(id)
+          if (!stream?.opened) return // Ignore frames from a closed/unknown stream.
+          const guest = room.peers.get(stream.guestMemberId)
+          if (!guest) { room.streams.delete(id); return }
+          const forwarded = Buffer.from(data)
+          forwarded.writeUInt32LE(id, 1)
+          send(guest, forwarded, true)
+          if (kind === 3) room.streams.delete(id)
+          return
+        }
+        const streamEntry = [...room.streams.entries()].find(([, stream]) => stream.guestMemberId === ws.memberId)
+        const streamId = room.streams.has(id) && room.streams.get(id).guestMemberId === ws.memberId ? id : streamEntry?.[0]
+        const stream = streamId === undefined ? undefined : room.streams.get(streamId)
+        if (!stream?.opened) return
+        const host = [...room.peers.values()].find(peer => peer.isHost)
+        if (!host) { room.streams.delete(streamId); const close = Buffer.from(data); close[0] = 3; send(ws, close, true); return }
+        const forwarded = Buffer.from(data); forwarded.writeUInt32LE(streamId, 1); send(host, forwarded, true)
+        if (kind === 3) room.streams.delete(streamId)
       } catch (error) {
         console.error('Relay request rejected', { roomId: ws.roomId, memberId: ws.memberId, error: error.message })
         ws.close(1008, 'Invalid relay request')
@@ -190,9 +228,21 @@ export function createGameRelay(db) {
       console.warn('Relay peer disconnected', { roomId: ws.roomId, memberId: ws.memberId, role: ws.isHost ? 'host' : 'guest', code, reason: reason.toString(), rttMs: ws.rttMs ?? null, missedPongs: ws.missedPongs || 0 })
       if (!joined) return
       const room = rooms.get(ws.roomId); if (!room) return
-      room.peers.delete(ws.memberId); room.stream = 0
-      // Existing matches cannot migrate or resume after either endpoint disconnects.
-      for (const peer of room.peers.values()) peer.close(1012, 'Peer disconnected; reconnect relay')
+      room.peers.delete(ws.memberId)
+      if (ws.isHost) {
+        // A host owns the Warcraft listener; guests cannot continue without it.
+        for (const peer of room.peers.values()) peer.close(1012, 'Host disconnected; reconnect relay')
+        room.streams.clear()
+      } else {
+        for (const [streamId, stream] of room.streams) {
+          if (stream.guestMemberId !== ws.memberId) continue
+          room.streams.delete(streamId)
+          const host = [...room.peers.values()].find(peer => peer.isHost)
+          if (host) { const close = Buffer.alloc(5); close[0] = 3; close.writeUInt32LE(streamId, 1); send(host, close, true) }
+        }
+      }
+      for (const peer of room.peers.values()) json(peer, { type: 'peers', count: room.peers.size })
+      publishNetwork(room)
       if (!room.peers.size) rooms.delete(ws.roomId)
     })
   })

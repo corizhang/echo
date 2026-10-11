@@ -60,7 +60,7 @@
     $('#room-back').hidden = false; $('#room-create-header').hidden = true; $('#room-invite').hidden = room.role !== 'host'
     $('#room-entry').hidden = member; $('#room-membership').hidden = !member
     $('#room-leave').hidden = !member; $('#room-end').hidden = room.role !== 'host'
-    $('#game-member-count').textContent = `房间成员 — ${room.members.length}`
+    $('#game-member-count').textContent = `房间成员 — ${room.members.length}/8`
     const members = $('#game-member-list'); members.replaceChildren()
     for (const person of room.members) {
       const row = document.createElement('div'); row.className = 'room-person'; row.dataset.memberId = person.id

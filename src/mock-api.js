@@ -86,6 +86,7 @@
     async joinGameRoom(roomId, inviteCode, displayName) {
       if (this.hasGameSession(roomId)) return this.getGameRoom(roomId)
       const next = roomState(); const room = next.rooms?.[roomId]; if (!room || room.status === 'closed') throw new Error('房间已结束或不存在')
+      if (room.members.filter(member => member.status !== 'left').length >= 8) throw new Error('游戏房间最多容纳 8 人')
       const memberId = `player-${crypto.randomUUID()}`; room.members.push({ id: memberId, displayName, role: 'player', status: 'joined' }); next.sessions ||= {}; next.sessions[roomId] = crypto.randomUUID(); next.members ||= {}; next.members[roomId] = memberId; next.activeRoomId = roomId
       saveRoomState(next); emit('game-room.updated', { roomId }); return this.getGameRoom(roomId)
     },

@@ -2,13 +2,14 @@ use crate::diagnostics;
 use futures_util::{stream::BoxStream, Sink, SinkExt, StreamExt};
 use quinn::Endpoint;
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
-    sync::oneshot,
+    sync::{mpsc, oneshot},
 };
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
@@ -16,6 +17,10 @@ use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 #[serde(rename_all = "camelCase")]
 pub struct PeerNetwork {
     role: String,
+    #[serde(default)]
+    member_id: String,
+    #[serde(default)]
+    is_self: bool,
     rtt_ms: Option<u64>,
     jitter_ms: Option<u64>,
     missed_pongs: u64,
@@ -165,6 +170,44 @@ fn frame(kind: u8, id: u32, bytes: &[u8]) -> Message {
 }
 type RelaySink = std::pin::Pin<Box<dyn Sink<Message, Error = String> + Send>>;
 type RelayStream = BoxStream<'static, Result<Message, String>>;
+
+enum HostSocketCommand {
+    Write(Vec<u8>),
+    Close,
+}
+enum HostSocketEvent {
+    Data(u32, Vec<u8>),
+    Closed(u32, String),
+}
+
+fn spawn_host_socket(
+    socket: TcpStream,
+    stream_id: u32,
+    mut commands: mpsc::Receiver<HostSocketCommand>,
+    events: mpsc::Sender<HostSocketEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let (mut read_socket, mut write_socket) = socket.into_split();
+        let mut buffer = vec![0u8; 32768];
+        loop {
+            tokio::select! {
+                read = read_socket.read(&mut buffer) => match read {
+                    Ok(0) => { let _ = events.send(HostSocketEvent::Closed(stream_id, "local game socket reached EOF".into())); break; }
+                    Ok(length) => { if events.send(HostSocketEvent::Data(stream_id, buffer[..length].to_vec())).await.is_err() { break; } }
+                    Err(error) => { let _ = events.send(HostSocketEvent::Closed(stream_id, error.to_string())).await; break; }
+                },
+                command = commands.recv() => match command {
+                    Some(HostSocketCommand::Write(bytes)) => match tokio::time::timeout(Duration::from_secs(5), write_socket.write_all(&bytes)).await {
+                        Ok(Ok(())) => (),
+                        Ok(Err(error)) => { let _ = events.send(HostSocketEvent::Closed(stream_id, error.to_string())).await; break; }
+                        Err(_) => { let _ = events.send(HostSocketEvent::Closed(stream_id, "local game socket write timeout".into())).await; break; }
+                    },
+                    Some(HostSocketCommand::Close) | None => break,
+                }
+            }
+        }
+    });
+}
 
 async fn connect_websocket(
     endpoint: &str,
@@ -417,7 +460,10 @@ async fn run(
     let mut advertisement: Option<(Vec<u8>, Instant)> = None;
     let mut host_port = None;
     let mut tcp: Option<TcpStream> = None;
+    let mut guest_stream_ready = false;
     let mut stream_id = 0u32;
+    let mut host_streams: HashMap<u32, mpsc::Sender<HostSocketCommand>> = HashMap::new();
+    let (host_event_tx, mut host_event_rx) = mpsc::channel(64);
     let mut host_game_identity: Option<GameInfo> = None;
     let mut guest_game_identity: Option<GameInfo> = None;
     let mut host_advertisement_count = 0u64;
@@ -442,7 +488,7 @@ async fn run(
                     if last_message.elapsed() > Duration::from_secs(35) { break Err("中转服务失去响应，请重新连接".into()); }
                     if last_relay_summary.elapsed() >= Duration::from_secs(15) {
                         let snapshot = status.lock().unwrap();
-                        diagnostics::info("game_relay_summary", &format!("role={} transport={} phase={} peers={} localTcpConnected={} proxyPort={} advertisementCount={} localToRelayBytesWindow={} relayToLocalBytesWindow={} gameIdentity={:?}", snapshot.role, snapshot.transport, snapshot.phase, snapshot.peers, tcp.is_some(), proxy_port, snapshot.advertisements, snapshot.sent_bytes.saturating_sub(previous_sent_bytes), snapshot.received_bytes.saturating_sub(previous_received_bytes), if host { host_game_identity } else { guest_game_identity }));
+                        diagnostics::info("game_relay_summary", &format!("role={} transport={} phase={} peers={} localTcpConnected={} activeGameStreams={} proxyPort={} advertisementCount={} localToRelayBytesWindow={} relayToLocalBytesWindow={} gameIdentity={:?}", snapshot.role, snapshot.transport, snapshot.phase, snapshot.peers, if host { !host_streams.is_empty() } else { tcp.is_some() }, host_streams.len().max(usize::from(tcp.is_some())), proxy_port, snapshot.advertisements, snapshot.sent_bytes.saturating_sub(previous_sent_bytes), snapshot.received_bytes.saturating_sub(previous_received_bytes), if host { host_game_identity } else { guest_game_identity }));
                         previous_sent_bytes = snapshot.sent_bytes;
                         previous_received_bytes = snapshot.received_bytes;
                         drop(snapshot);
@@ -450,7 +496,7 @@ async fn run(
                     }
                     if !ready { continue; }
                     if host {
-                        if tcp.is_none() && host_port.is_some_and(|(_,seen): (GameInfo,Instant)| seen.elapsed()>Duration::from_secs(6)) {
+                        if host_streams.is_empty() && host_port.is_some_and(|(_,seen): (GameInfo,Instant)| seen.elapsed()>Duration::from_secs(6)) {
                             if let Some((info, _)) = host_port {
                                 diagnostics::info("game_advertisement", &format!("event=host_advertisement_expired hostCounter={} entryKey={} port={}", info.host_counter, info.entry_key, info.port));
                             }
@@ -494,7 +540,7 @@ async fn run(
                             host_advertisement_count = 0;
                             last_advertisement_summary = Instant::now();
                         }
-                        if tcp.is_none() { update(&status,"discovered","已发现本机对局，等待好友在游戏内加入"); }
+                        if host_streams.is_empty() { update(&status,"discovered","已发现本机对局，等待好友在游戏内加入"); }
                         send(&mut sink, Message::Text(serde_json::json!({"type":"advertisement","packet":p}).to_string().into())).await?;
                     }
                 },
@@ -508,9 +554,9 @@ async fn run(
                     stream_id = stream_id.wrapping_add(1).max(1);
                     diagnostics::info("game_tcp", &format!("event=guest_proxy_accepted streamId={stream_id} localAddr={:?} peerAddr={:?} gameIdentity={:?}", socket.local_addr().ok(), socket.peer_addr().ok(), guest_game_identity));
                     send(&mut sink, frame(1,stream_id,&[])).await?;
-                    tcp = Some(socket); update(&status,"forwarding","本机游戏已接入代理；请在游戏内确认加入和开局");
+                    tcp = Some(socket); guest_stream_ready = false; update(&status,"forwarding","正在分配房间游戏通道");
                 },
-                read = async { match tcp.as_mut() { Some(s) => s.read(&mut tcp_buf).await, None => std::future::pending().await } } => {
+                read = async { match tcp.as_mut() { Some(s) => s.read(&mut tcp_buf).await, None => std::future::pending().await } }, if !host && guest_stream_ready => {
                     match read {
                         Ok(0) => { diagnostics::info("game_tcp", &format!("event=local_game_eof streamId={stream_id} direction=local_to_relay")); tcp = None; send(&mut sink, frame(3,stream_id,&[])).await?; update(&status,"waiting","游戏连接已结束，等待重新加入"); },
                         Ok(n) => {
@@ -518,6 +564,24 @@ async fn run(
                             status.lock().unwrap().sent_bytes += n as u64;
                         },
                         Err(error) => { diagnostics::error("game_tcp", &format!("event=local_game_read_failed streamId={stream_id} error={error}")); tcp = None; send(&mut sink, frame(3,stream_id,&[])).await?; update(&status,"waiting","读取本机游戏连接失败"); }
+                    }
+                },
+                event = host_event_rx.recv(), if host => {
+                    match event {
+                        Some(HostSocketEvent::Data(id, bytes)) => {
+                            if host_streams.contains_key(&id) {
+                                send(&mut sink, frame(2,id,&bytes)).await?;
+                                status.lock().unwrap().sent_bytes += bytes.len() as u64;
+                            }
+                        },
+                        Some(HostSocketEvent::Closed(id, reason)) => {
+                            if host_streams.remove(&id).is_some() {
+                                diagnostics::info("game_tcp", &format!("event=host_stream_closed streamId={id} reason={reason}"));
+                                send(&mut sink, frame(3,id,&[])).await?;
+                                update(&status, if host_streams.is_empty() { "waiting" } else { "forwarding" }, if host_streams.is_empty() { "游戏连接已结束，等待好友加入" } else { "部分玩家已连接游戏" });
+                            }
+                        },
+                        None => return Err("游戏 TCP 工作通道已关闭".into()),
                     }
                 },
                 incoming = source.next() => {
@@ -602,10 +666,15 @@ async fn run(
                                     };
                                     guest_advertisement_count += 1;
                                     if guest_game_identity != Some(info) {
-                                        if let Some(previous) = advertisement.as_ref().and_then(|(old, _)| game_info(old)) {
+                                        // The cached advertisement can expire before a new game is
+                                        // announced. Keep the last published identity separately so
+                                        // the old Warcraft LAN-list entry is still explicitly removed.
+                                        if let Some(previous) = guest_game_identity {
                                             let mut remove = vec![0xf7,0x33,8,0]; remove.extend(&previous.host_counter.to_le_bytes());
-                                            let _ = udp.send_to(&remove,"127.0.0.1:6112").await;
-                                            diagnostics::info("game_advertisement", &format!("event=guest_removed_previous hostCounter={} entryKey={} port={}", previous.host_counter, previous.entry_key, previous.port));
+                                            match udp.send_to(&remove,"127.0.0.1:6112").await {
+                                                Ok(sent) => diagnostics::info("game_advertisement", &format!("event=guest_removed_previous reason=identity_replaced hostCounter={} entryKey={} port={} packetBytes={sent}", previous.host_counter, previous.entry_key, previous.port)),
+                                                Err(error) => diagnostics::error("game_advertisement", &format!("event=guest_remove_previous_failed reason=identity_replaced hostCounter={} entryKey={} port={} error={error}", previous.host_counter, previous.entry_key, previous.port)),
+                                            }
                                         }
                                         diagnostics::info("game_advertisement", &format!("event=guest_game_info identity_changed=true hostCounter={} entryKey={} advertisedPort={} proxyPort={} packetBytes={}", info.host_counter, info.entry_key, info.port, proxy_port, p.len()));
                                         guest_game_identity = Some(info);
@@ -627,26 +696,46 @@ async fn run(
                             if p.len()<5 { break Err("无效的中转帧".into()); }
                             let id = u32::from_le_bytes(p[1..5].try_into().unwrap());
                             match p[0] {
-                                1 if host && ready && tcp.is_none() => {
+                                4 if !host && p.len()==9 && tcp.is_some() && id==stream_id => {
+                                    let assigned_id = u32::from_le_bytes(p[5..9].try_into().unwrap());
+                                    if assigned_id == 0 { break Err("服务端分配了无效的游戏流 ID".into()); }
+                                    diagnostics::info("game_tcp", &format!("event=guest_stream_assigned localStreamId={id} roomStreamId={assigned_id}"));
+                                    stream_id = assigned_id;
+                                    guest_stream_ready = true;
+                                    send(&mut sink, frame(4,assigned_id,&[])).await?;
+                                    update(&status,"forwarding","本机游戏已接入代理；请在游戏内确认加入和开局");
+                                },
+                                1 if host && ready && host_streams.len() < 7 => {
                                     let fresh = host_port.filter(|(_,t)|t.elapsed()<Duration::from_secs(6));
                                     if let Some((info,seen)) = fresh {
                                         diagnostics::info("game_tcp", &format!("event=host_connect_attempt streamId={id} target=127.0.0.1:{} hostCounter={} entryKey={} advertisementAgeMs={}", info.port, info.host_counter, info.entry_key, seen.elapsed().as_millis()));
                                         let connect_started = Instant::now();
                                         match tokio::time::timeout(Duration::from_secs(3),TcpStream::connect((std::net::Ipv4Addr::LOCALHOST,info.port))).await {
-                                            Ok(Ok(socket)) => { let _ = socket.set_nodelay(true); diagnostics::info("game_tcp", &format!("event=host_connected streamId={id} target=127.0.0.1:{} elapsedMs={} localAddr={:?}", info.port, connect_started.elapsed().as_millis(), socket.local_addr().ok())); tcp = Some(socket); stream_id=id; update(&status,"forwarding","游戏 TCP 已连接；请在游戏内确认加入和开局"); },
+                                            Ok(Ok(socket)) => { let _ = socket.set_nodelay(true); diagnostics::info("game_tcp", &format!("event=host_connected streamId={id} target=127.0.0.1:{} elapsedMs={} localAddr={:?} activeStreamsBefore={}", info.port, connect_started.elapsed().as_millis(), socket.local_addr().ok(), host_streams.len())); let (command_tx, command_rx) = mpsc::channel(32); spawn_host_socket(socket,id,command_rx,host_event_tx.clone()); host_streams.insert(id,command_tx); update(&status,"forwarding","游戏 TCP 已连接；等待其他玩家加入"); },
                                             Ok(Err(error)) => { diagnostics::error("game_tcp", &format!("event=host_connect_failed streamId={id} target=127.0.0.1:{} elapsedMs={} error={error}", info.port, connect_started.elapsed().as_millis())); send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","无法连接本机游戏端口，请检查房主是否仍在建房"); },
                                             Err(_) => { diagnostics::error("game_tcp", &format!("event=host_connect_timeout streamId={id} target=127.0.0.1:{} timeoutMs=3000", info.port)); send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","连接本机游戏端口超时，请检查房主是否仍在建房"); }
                                         }
                                     } else { diagnostics::error("game_tcp", &format!("event=host_connect_rejected streamId={id} reason=no_fresh_advertisement")); send(&mut sink, frame(3,id,&[])).await?; }
                                 },
-                                2 if id==stream_id => if let Some(socket) = tcp.as_mut() {
-                                    match tokio::time::timeout(Duration::from_secs(5),socket.write_all(&p[5..])).await {
-                                        Ok(Ok(())) => status.lock().unwrap().received_bytes += (p.len()-5) as u64,
-                                        Ok(Err(error)) => { diagnostics::error("game_tcp", &format!("event=local_game_write_failed streamId={id} payloadBytes={} error={error}", p.len()-5)); tcp = None; send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","本机游戏连接写入失败"); }
-                                        Err(_) => { diagnostics::error("game_tcp", &format!("event=local_game_write_timeout streamId={id} payloadBytes={} timeoutMs=5000", p.len()-5)); tcp = None; send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","本机游戏连接写入超时"); }
+                                1 if host && ready => { diagnostics::error("game_tcp", &format!("event=host_connect_rejected streamId={id} reason=room_stream_limit activeStreams={}", host_streams.len())); send(&mut sink, frame(3,id,&[])).await?; },
+                                2 if host => {
+                                    if let Some(command) = host_streams.get(&id) {
+                                        if command.send(HostSocketCommand::Write(p[5..].to_vec())).await.is_ok() { status.lock().unwrap().received_bytes += (p.len()-5) as u64; }
+                                        else { diagnostics::error("game_tcp", &format!("event=host_stream_write_queue_failed streamId={id} payloadBytes={}",p.len()-5)); }
                                     }
                                 },
-                                3 if id==stream_id => { diagnostics::info("game_tcp", &format!("event=peer_closed_stream streamId={id} direction=peer_to_local")); tcp=None; update(&status,"waiting","游戏连接已关闭，等待重新加入"); },
+                                3 if host => {
+                                    if let Some(command) = host_streams.remove(&id) { let _ = command.send(HostSocketCommand::Close).await; diagnostics::info("game_tcp", &format!("event=host_stream_closed_by_peer streamId={id} activeStreams={}",host_streams.len())); }
+                                    update(&status, if host_streams.is_empty() { "waiting" } else { "forwarding" }, if host_streams.is_empty() { "游戏连接已结束，等待好友加入" } else { "部分玩家已连接游戏" });
+                                },
+                                2 if !host && id==stream_id => if let Some(socket) = tcp.as_mut() {
+                                    match tokio::time::timeout(Duration::from_secs(5),socket.write_all(&p[5..])).await {
+                                        Ok(Ok(())) => status.lock().unwrap().received_bytes += (p.len()-5) as u64,
+                                        Ok(Err(error)) => { diagnostics::error("game_tcp", &format!("event=local_game_write_failed streamId={id} payloadBytes={} error={error}", p.len()-5)); tcp = None; guest_stream_ready=false; send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","本机游戏连接写入失败"); }
+                                        Err(_) => { diagnostics::error("game_tcp", &format!("event=local_game_write_timeout streamId={id} payloadBytes={} timeoutMs=5000", p.len()-5)); tcp = None; guest_stream_ready=false; send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","本机游戏连接写入超时"); }
+                                    }
+                                },
+                                3 if !host && id==stream_id => { diagnostics::info("game_tcp", &format!("event=peer_closed_stream streamId={id} direction=peer_to_local")); tcp=None; guest_stream_ready=false; update(&status,"waiting","游戏连接已关闭，等待重新加入"); },
                                 _ => (),
                             }
                         },

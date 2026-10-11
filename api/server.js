@@ -338,6 +338,8 @@ app.post('/api/v1/game-rooms/:roomId/join', asyncRoute(async (req, res) => {
       await client.query('COMMIT')
       return res.json({ room: await getGameRoom(req.params.roomId), memberId: sameUser.rows[0].id, role: sameUser.rows[0].role, sessionToken })
     }
+    const { rows: [capacity] } = await client.query("SELECT count(*)::int AS total FROM game_room_members WHERE room_id=$1 AND status<>'left'", [req.params.roomId])
+    if (capacity.total >= 8) { await client.query('ROLLBACK'); return res.status(409).json({ error: '游戏房间最多容纳 8 人' }) }
     await client.query(`INSERT INTO game_room_members(id,room_id,user_id,display_name,role,status,session_token_hash) VALUES($1,$2,$5,$3,'player','joined',$4)`, [memberId, req.params.roomId, displayName, hashSecret(sessionToken), req.authUser.id])
     await client.query("INSERT INTO game_room_messages(id,room_id,author,content,kind) VALUES($1,$2,$3,$4,'system')", [`gm-${randomUUID()}`, req.params.roomId, displayName, `${displayName} 加入了房间`])
     await client.query('COMMIT')
