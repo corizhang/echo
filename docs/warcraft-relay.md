@@ -18,6 +18,8 @@
 - WSS 和 QUIC 都沿用 API 应用层 Ping/Pong 心跳与房间 RTT 采样（JSON 心跳穿过 QUIC 到达真实 Windows 客户端），避免 QUIC 适配器的 WebSocket 自动 Pong 把测量变成仅测 API 到适配器的延迟。界面会显示实际使用的传输方式。
 - API 每 30 秒记录最近 5 分钟各连接 RTT 样本的最小值、中位数、P95、最大值，以及心跳超时增量、WebSocket 排队字节数和 Node 事件循环 P95/最大延迟。样本不足 40 个时不报告 P95；日志保留最近 12 个带 Ping ID 的样本便于与客户端记录对照。
 - Windows 客户端在联机面板提供最近 5 分钟 RTT 图表与样本统计，并每 30 秒在 `%APPDATA%\app.echo.squad\logs\echo-diagnostics.log` 记录本机 Ping 接收后发送 Pong 的耗时摘要；超过 5 ms 的单次处理会额外记录。
+- 联机诊断日志还会记录 `game_advertisement` 的 `hostCounter`、`entryKey`、游戏端口/本地代理端口和广播摘要，用于判断同一个房间是否出现多个游戏标识；`game_tcp` 会记录代理接受、房主连接本机魔兽端口的结果/耗时、读写失败以及关闭方向。不会记录房间票据、聊天内容或游戏数据负载。
+- QUIC relay 服务端日志按 15 秒窗口记录客户端与 API 之间的游戏帧数/字节数、控制帧及 QUIC 帧读取错误原因。排查 `connection lost` 时，将两端 `echo-diagnostics.log` 的 `game_tcp`、`relay_transport` 事件与 `docker compose logs --since=10m api game-quic-relay` 中的 peer disconnect 和 QUIC relay session 事件按时间及 roomId 对齐。
 - 对照相同 Ping ID：服务端 RTT 尖峰而客户端 Ping/Pong 处理耗时正常，偏向公网路径延迟；服务端事件循环延迟也高，检查 VPS/API 调度；客户端处理耗时高，检查 Windows 客户端调度。客户端计时从收到 Ping 才开始，不能单独测出 Ping 到达客户端前的公网耗时。
 - API 日志记录中转连接关闭码、原因、最后测得 RTT 和心跳超时数，可用 `docker compose logs --since=10m api` 查看。
 - 游戏 TCP 流断开后目前不能恢复原有魔兽对局；即使重新连接中转，也需要回到游戏内重新建图或加入。
