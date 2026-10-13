@@ -1,0 +1,60 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Pull and rebuild on VPS
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_PROFILE: ${{ vars.DEPLOY_PROFILE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : "${DEPLOY_HOST:?Set the DEPLOY_HOST Actions secret}"
+          : "${DEPLOY_USER:?Set the DEPLOY_USER Actions secret}"
+          : "${DEPLOY_SSH_KEY:?Set the DEPLOY_SSH_KEY Actions secret}"
+          : "${DEPLOY_KNOWN_HOSTS:?Set the DEPLOY_KNOWN_HOSTS Actions secret}"
+
+          DEPLOY_PATH="${DEPLOY_PATH:-/root/echo}"
+          DEPLOY_PROFILE="${DEPLOY_PROFILE:-quic}"
+          DEPLOY_BRANCH="${GITHUB_REF_NAME}"
+
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Invalid DEPLOY_HOST" >&2; exit 2; }
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "Invalid DEPLOY_USER" >&2; exit 2; }
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "DEPLOY_PATH must be an absolute path containing only letters, digits, dot, underscore, slash, and hyphen" >&2; exit 2; }
+          [[ "$DEPLOY_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "Invalid branch name" >&2; exit 2; }
+          [[ "$DEPLOY_PROFILE" == "quic" || "$DEPLOY_PROFILE" == "none" ]] || { echo "DEPLOY_PROFILE must be 'quic' or 'none'" >&2; exit 2; }
+
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/echo_deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/echo_deploy_key" "$HOME/.ssh/known_hosts"
+
+          SSH_OPTS=(-i "$HOME/.ssh/echo_deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          REMOTE_COMMAND="cd '$DEPLOY_PATH' && git pull --ff-only origin '$DEPLOY_BRANCH' && docker compose"
+          if [[ "$DEPLOY_PROFILE" == "quic" ]]; then
+            REMOTE_COMMAND+=" --profile quic"
+          fi
+          REMOTE_COMMAND+=" up -d --build && docker compose ps"
+
+          ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
