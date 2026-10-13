@@ -55,6 +55,6 @@ jobs:
           if [[ "$DEPLOY_PROFILE" == "quic" ]]; then
             REMOTE_COMMAND+=" --profile quic"
           fi
-          REMOTE_COMMAND+=" up -d --build && docker compose ps"
+          REMOTE_COMMAND+=" up -d --build && docker compose restart web && docker compose ps"
 
           ssh "${SSH_OPTS[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "$REMOTE_COMMAND"
