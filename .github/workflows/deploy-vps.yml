@@ -35,7 +35,7 @@ jobs:
           : "${DEPLOY_SSH_KEY:?Set the DEPLOY_SSH_KEY Actions secret}"
           : "${DEPLOY_KNOWN_HOSTS:?Set the DEPLOY_KNOWN_HOSTS Actions secret}"
 
-          DEPLOY_PATH="${DEPLOY_PATH:-/root/echo}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/echo}"
           DEPLOY_PROFILE="${DEPLOY_PROFILE:-quic}"
           DEPLOY_BRANCH="${GITHUB_REF_NAME}"
 
