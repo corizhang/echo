@@ -1,11 +1,12 @@
 use std::{
     env,
     error::Error,
+    fmt::Write as FmtWrite,
     fs::File,
     io::BufReader,
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -16,6 +17,50 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const MAX_FRAME: usize = 65_536;
 
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character <= '\u{1f}' => {
+                let _ = write!(escaped, "\\u{:04x}", character as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn json_number(value: impl std::fmt::Display) -> String { value.to_string() }
+fn json_bool(value: bool) -> String { value.to_string() }
+fn json_option_number(value: Option<impl std::fmt::Display>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_else(|| "null".into())
+}
+
+fn log_event(level: &str, event: &str, fields: Vec<(&str, String)>) {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let instance = env::var("ECHO_INSTANCE_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "unknown".into());
+    let mut line = format!(
+        "{{\"timestamp_unix_ms\":{timestamp},\"schema_version\":1,\"level\":{},\"service\":\"game-quic-relay\",\"instance\":{},\"event\":{}",
+        json_string(level), json_string(&instance), json_string(event)
+    );
+    for (key, value) in fields {
+        let _ = write!(line, ",{}:{value}", json_string(key));
+    }
+    line.push('}');
+    eprintln!("{line}");
+}
+
 fn server_config(cert_path: &str, key_path: &str) -> Result<ServerConfig, Box<dyn Error>> {
     let mut cert_reader = BufReader::new(File::open(cert_path)?);
     let certs = rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
@@ -25,7 +70,14 @@ fn server_config(cert_path: &str, key_path: &str) -> Result<ServerConfig, Box<dy
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
+    if let Err(error) = run().await {
+        log_event("fatal", "quic_relay_start_failed", vec![("error", json_string(&format!("{error:#}")))]);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let bind: SocketAddr = env::var("QUIC_BIND")
         .unwrap_or_else(|_| "0.0.0.0:40000".into())
         .parse()?;
@@ -35,24 +87,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let key = env::var("QUIC_KEY_FILE").unwrap_or_else(|_| "/run/certs/echo.key".into());
     let mut config = server_config(&cert, &key)?;
     config.max_incoming(256);
+    let mode = env::var("QUIC_TRANSPORT_MODE").unwrap_or_else(|_| "standard".into());
+    if !["standard", "compat"].contains(&mode.as_str()) { return Err("QUIC_TRANSPORT_MODE must be standard or compat".into()); }
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    if mode == "compat" { transport.initial_mtu(1200).min_mtu(1200).mtu_discovery_config(None); }
+    config.transport_config(Arc::new(transport));
+    log_event("info", "quic_transport_config", vec![
+        ("mode", json_string(&mode)),
+        ("keep_alive_seconds", json_number(5)),
+        ("mtu_discovery", json_bool(mode != "compat")),
+    ]);
     let endpoint = Endpoint::server(config, bind)?;
     let sessions = Arc::new(Semaphore::new(64));
-    eprintln!("QUIC game relay listening on {bind}");
+    log_event("info", "quic_relay_listening", vec![("bind", json_string(&bind.to_string()))]);
     while let Some(incoming) = endpoint.accept().await {
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             drop(incoming);
-            eprintln!("QUIC relay rejected connection: session limit reached");
+            log_event("warn", "quic_connection_rejected", vec![("reason", json_string("session_limit_reached"))]);
             continue;
         };
         let api_ws = api_ws.clone();
         tokio::spawn(async move {
             let _permit = permit;
             if let Err(error) = handle(incoming, api_ws).await {
-                eprintln!("QUIC relay session ended: {error:#}");
+                log_event("error", "quic_session_error", vec![("error", json_string(&format!("{error:#}")))]);
             }
         });
     }
     Ok(())
+}
+
+struct SessionDiagnostics(quinn::Connection);
+impl SessionDiagnostics {
+    fn log(&self, event: &str) {
+        log_event("info", "quic_connection_stats", vec![
+            ("phase", json_string(event)),
+            ("connection_id", json_string(&self.0.stable_id().to_string())),
+            ("remote", json_string(&self.0.remote_address().to_string())),
+            ("close_reason", json_string(&format!("{:?}", self.0.close_reason()))),
+            ("stats_text", json_string(&format!("{:?}", self.0.stats()))),
+        ]);
+    }
+}
+impl Drop for SessionDiagnostics {
+    fn drop(&mut self) { self.log("session_end"); self.0.close(0u32.into(), b"relay session ended"); }
 }
 
 async fn handle(
@@ -60,11 +139,13 @@ async fn handle(
     api_ws: String,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let connection = tokio::time::timeout(Duration::from_secs(8), incoming).await??;
+    let diagnostics = SessionDiagnostics(connection.clone());
+    diagnostics.log("handshake_complete");
     let remote = connection.remote_address();
-    eprintln!("QUIC session established remote={remote}");
+    log_event("info", "quic_session_established", vec![("remote", json_string(&remote.to_string()))]);
     let (mut send, mut recv) =
         tokio::time::timeout(Duration::from_secs(5), connection.accept_bi()).await??;
-    let auth = read_frame(&mut recv).await?;
+    let auth = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv)).await??;
     if auth.0 != 1 || auth.1.len() > 256 {
         return Err(format!(
             "remote={remote} invalid auth frame kind={} bytes={}",
@@ -84,10 +165,10 @@ async fn handle(
         tokio::time::timeout(Duration::from_secs(8), connect_async(&api_ws)).await??;
     let (mut ws_sink, mut ws_stream) = ws.split();
     ws_sink.send(Message::Text(auth_text.into())).await?;
-    eprintln!(
-        "QUIC session authenticated through API remote={remote} api_status={}",
-        response.status()
-    );
+    log_event("info", "quic_auth_sent_to_api", vec![
+        ("remote", json_string(&remote.to_string())),
+        ("api_status", json_number(response.status().as_u16())),
+    ]);
 
     // Keep one task as the sole owner of RecvStream reads. A read_frame future
     // cannot be cancelled safely after consuming a partial length/body; select!
@@ -107,11 +188,13 @@ async fn handle(
                 break;
             }
         }
-        eprintln!("QUIC frame reader stopped remote={reader_remote}");
+        log_event("info", "quic_frame_reader_stopped", vec![("remote", json_string(&reader_remote.to_string()))]);
     });
 
     let started = Instant::now();
     let mut last_report = Instant::now();
+    let mut last_client_frame: Option<Instant> = None;
+    let mut last_api_frame: Option<Instant> = None;
     let mut quic_to_api_frames = 0u64;
     let mut api_to_quic_frames = 0u64;
     let mut quic_to_api_bytes = 0u64;
@@ -122,11 +205,17 @@ async fn handle(
             incoming = ws_stream.next() => {
                 match incoming {
                     Some(Ok(message)) => {
+                        last_api_frame = Some(Instant::now());
                         if let Some((kind, payload)) = encode_ws(message) {
                             api_to_quic_frames += 1;
                             api_to_quic_bytes += payload.len() as u64;
                             if kind == 2 && payload.len() >= 5 && matches!(payload[0], 1 | 3) {
-                                eprintln!("QUIC relay game control direction=api_to_client kind={} stream_id={} remote={remote}", payload[0], u32::from_le_bytes(payload[1..5].try_into().unwrap()));
+                                log_event("debug", "quic_game_control", vec![
+                                    ("direction", json_string("api_to_client")),
+                                    ("kind", json_number(payload[0])),
+                                    ("stream_id", json_number(u32::from_le_bytes(payload[1..5].try_into().unwrap()))),
+                                    ("remote", json_string(&remote.to_string())),
+                                ]);
                             }
                             if let Err(error) = write_frame(&mut send, kind, &payload).await {
                                 break Err(error);
@@ -143,10 +232,16 @@ async fn handle(
                     Some(Err(error)) => break Err(error.into()),
                     None => break Err("QUIC frame reader stopped unexpectedly".into()),
                 };
+                last_client_frame = Some(Instant::now());
                 quic_to_api_frames += 1;
                 quic_to_api_bytes += payload.len() as u64;
                 if kind == 2 && payload.len() >= 5 && matches!(payload[0], 1 | 3) {
-                    eprintln!("QUIC relay game control direction=client_to_api kind={} stream_id={} remote={remote}", payload[0], u32::from_le_bytes(payload[1..5].try_into().unwrap()));
+                    log_event("debug", "quic_game_control", vec![
+                        ("direction", json_string("client_to_api")),
+                        ("kind", json_number(payload[0])),
+                        ("stream_id", json_number(u32::from_le_bytes(payload[1..5].try_into().unwrap()))),
+                        ("remote", json_string(&remote.to_string())),
+                    ]);
                 }
                 let message = match decode_ws(kind, payload) {
                     Ok(message) => message,
@@ -156,7 +251,21 @@ async fn handle(
                 if let Err(error) = ws_sink.send(message).await { break Err(Box::new(error) as Box<dyn Error + Send + Sync>); }
             }
             _ = tokio::time::sleep_until((last_report + Duration::from_secs(15)).into()) => {
-                eprintln!("QUIC relay traffic windowSeconds={} remote={} client_to_api_frames={} client_to_api_bytes={} api_to_client_frames={} api_to_client_bytes={} totalSeconds={:.0}", last_report.elapsed().as_secs(), remote, quic_to_api_frames, quic_to_api_bytes, api_to_quic_frames, api_to_quic_bytes, started.elapsed().as_secs_f64());
+                diagnostics.log("window");
+                log_event("info", "quic_application_receive_window", vec![
+                    ("remote", json_string(&remote.to_string())),
+                    ("last_client_frame_age_ms", json_option_number(last_client_frame.map(|at| at.elapsed().as_millis()))),
+                    ("last_api_frame_age_ms", json_option_number(last_api_frame.map(|at| at.elapsed().as_millis()))),
+                ]);
+                log_event("info", "quic_traffic_window", vec![
+                    ("window_seconds", json_number(last_report.elapsed().as_secs())),
+                    ("remote", json_string(&remote.to_string())),
+                    ("client_to_api_frames", json_number(quic_to_api_frames)),
+                    ("client_to_api_bytes", json_number(quic_to_api_bytes)),
+                    ("api_to_client_frames", json_number(api_to_quic_frames)),
+                    ("api_to_client_bytes", json_number(api_to_quic_bytes)),
+                    ("total_seconds", json_number(started.elapsed().as_secs_f64())),
+                ]);
                 quic_to_api_frames = 0; api_to_quic_frames = 0; quic_to_api_bytes = 0; api_to_quic_bytes = 0;
                 last_report = Instant::now();
             }
@@ -164,7 +273,15 @@ async fn handle(
         }
     };
     reader.abort();
-    eprintln!("QUIC session closed remote={remote} elapsedSeconds={:.1} client_to_api_frames={} client_to_api_bytes={} api_to_client_frames={} api_to_client_bytes={} result={}", started.elapsed().as_secs_f64(), quic_to_api_frames, quic_to_api_bytes, api_to_quic_frames, api_to_quic_bytes, if result.is_ok() { "clean" } else { "error" });
+    log_event("info", "quic_session_closed", vec![
+        ("remote", json_string(&remote.to_string())),
+        ("elapsed_seconds", json_number(started.elapsed().as_secs_f64())),
+        ("client_to_api_frames", json_number(quic_to_api_frames)),
+        ("client_to_api_bytes", json_number(quic_to_api_bytes)),
+        ("api_to_client_frames", json_number(api_to_quic_frames)),
+        ("api_to_client_bytes", json_number(api_to_quic_bytes)),
+        ("result", json_string(if result.is_ok() { "clean" } else { "error" })),
+    ]);
     result
 }
 

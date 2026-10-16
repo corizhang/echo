@@ -5,7 +5,7 @@ const source = readFileSync('src/relay-ui.js', 'utf8')
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
 function harness(ticket = async () => ({ ticket: 'test' }), delayedStop = false) {
   const events = new Map(), nodes = new Map(), calls = []
-  let native = { phase: 'idle' }, stopping = 0
+  let native = { phase: 'idle' }, stopping = 0, tick
   const node = id => { if (!nodes.has(id)) nodes.set(id, { addEventListener() {}, value: '', hidden: false }); return nodes.get(id) }
   const window = { __TAURI__: { core: { invoke: async (cmd, args) => {
     calls.push([cmd, args]); if (cmd === 'start_relay') native = { roomId: args.roomId, role: 'guest', phase: 'waiting' }
@@ -14,8 +14,8 @@ function harness(ticket = async () => ({ ticket: 'test' }), delayedStop = false)
     if (cmd === 'relay_status') return native
   } } }, EchoApi: { getGameRelayTicket: ticket }, EchoApp: { toast() {} },
     addEventListener: (name, fn) => events.set(name, fn), dispatchEvent() {} }
-  vm.runInNewContext(source, { window, document: { querySelector: node }, localStorage: { getItem() {}, setItem() {} }, CustomEvent: class {}, setTimeout, setInterval() {} })
-  return { calls, emit: (name, detail) => events.get(name)({ detail }), button: node('#relay-toggle') }
+  vm.runInNewContext(source, { window, document: { querySelector: node }, localStorage: { getItem() {}, setItem() {} }, CustomEvent: class {}, setTimeout, setInterval(fn) { tick = fn } })
+  return { calls, tick: () => tick(), setStatus: value => { native = value }, mode: node('#relay-transport-mode'), emit: (name, detail) => events.get(name)({ detail }), button: node('#relay-toggle') }
 }
 const h = harness()
 h.emit('echo:room-context', { id: 'a', joined: true, role: 'player' }); await flush()
@@ -45,4 +45,36 @@ roleChange.emit('echo:room-context', { id: 'a', joined: true, role: 'player' });
 roleChange.emit('echo:room-context', { id: 'a', joined: true, role: 'host' }); await flush()
 assert.equal(roleChange.calls.filter(c => c[0] === 'stop_relay').length, 1)
 assert.equal(roleChange.calls.filter(c => c[0] === 'start_relay').length, 2, 'host transfer reconnects once')
-console.log('Auto relay lifecycle checks passed')
+let ticketCount = 0
+const fallback = harness(async () => ({ ticket: `ticket-${++ticketCount}` }))
+fallback.emit('echo:room-context', { id: 'a', joined: true, role: 'player' }); await flush()
+fallback.setStatus({ roomId: 'a', role: 'guest', phase: 'error', transport: 'quic', fallbackEligible: true, gameStarted: false, detail: 'timeout' })
+await fallback.tick(); await flush()
+const starts = fallback.calls.filter(c => c[0] === 'start_relay')
+assert.equal(starts.length, 2)
+assert.equal(starts[1][1].transportMode, 'wss')
+assert.notEqual(starts[0][1].ticket, starts[1][1].ticket, 'fallback requires a fresh single-use ticket')
+fallback.setStatus({ roomId: 'a', phase: 'error', transport: 'quic', fallbackEligible: true })
+await fallback.tick(); await flush()
+assert.equal(ticketCount, 2, 'only one automatic fallback per attempt')
+for (const overrides of [{ gameStarted: true }, { fallbackEligible: false }, { roomId: 'old-room' }]) {
+  const denied = harness()
+  denied.emit('echo:room-context', { id: 'a', joined: true, role: 'player' }); await flush()
+  denied.setStatus({ roomId: 'a', phase: 'error', transport: 'quic', fallbackEligible: true, ...overrides })
+  await denied.tick(); await flush()
+  assert.equal(denied.calls.filter(c => c[0] === 'start_relay').length, 1)
+}
+const forced = harness()
+forced.mode.value = 'wss'
+forced.emit('echo:room-context', { id: 'a', joined: true, role: 'player' }); await flush()
+forced.setStatus({ roomId: 'a', phase: 'error', transport: 'quic', fallbackEligible: true })
+await forced.tick(); await flush()
+assert.equal(forced.calls.filter(c => c[0] === 'start_relay').length, 1)
+let resolveFallback, requests = 0
+const leaving = harness(() => ++requests === 1 ? Promise.resolve({ ticket: 'initial' }) : new Promise(resolve => { resolveFallback = resolve }))
+leaving.emit('echo:room-context', { id: 'a', joined: true, role: 'player' }); await flush()
+leaving.setStatus({ roomId: 'a', phase: 'error', transport: 'quic', fallbackEligible: true })
+const pendingFallback = leaving.tick(); await flush()
+leaving.emit('echo:room-left', 'a'); resolveFallback({ ticket: 'new' }); await pendingFallback; await flush()
+assert.equal(leaving.calls.filter(c => c[0] === 'start_relay').length, 1, 'leaving during fallback must cancel the late ticket')
+console.log('Auto relay lifecycle and fresh-ticket fallback checks passed')

@@ -54,6 +54,8 @@ pub struct RelayStatus {
     sent_bytes: u64,
     received_bytes: u64,
     local_port: u16,
+    fallback_eligible: bool,
+    game_started: bool,
     peer_network: Vec<PeerNetwork>,
     client_ping_samples: Vec<ClientPingSample>,
 }
@@ -70,6 +72,8 @@ impl Default for RelayStatus {
             sent_bytes: 0,
             received_bytes: 0,
             local_port: 0,
+            fallback_eligible: false,
+            game_started: false,
             peer_network: Vec::new(),
             client_ping_samples: Vec::new(),
         }
@@ -105,7 +109,7 @@ pub fn start_relay(
         diagnostics::error("start_relay", "rejected invalid room credentials");
         return Err("无效的房间凭据".into());
     }
-    if !["auto", "wss"].contains(&transport_mode.as_str()) {
+    if !["auto", "wss", "quic-compat"].contains(&transport_mode.as_str()) {
         return Err("无效的中转传输偏好".into());
     }
     let mut relay = state.lock().unwrap();
@@ -238,11 +242,27 @@ async fn connect_websocket(
     Ok((tx, rx))
 }
 
+struct QuicSession {
+    _endpoint: Endpoint,
+    connection: quinn::Connection,
+}
+impl QuicSession {
+    fn log(&self, event: &str) {
+        diagnostics::info("quic_stats", &format!("event={event} connectionId={} remote={} closeReason={:?} stats={:?}", self.connection.stable_id(), self.connection.remote_address(), self.connection.close_reason(), self.connection.stats()));
+    }
+}
+impl Drop for QuicSession {
+    fn drop(&mut self) {
+        self.log("session_end");
+        self.connection.close(0u32.into(), b"relay session ended");
+    }
+}
+
 async fn connect_quic(
     base: &str,
     ticket: &str,
     transport_mode: &str,
-) -> Result<(RelaySink, RelayStream, Endpoint), String> {
+) -> Result<(RelaySink, RelayStream, QuicSession), String> {
     if transport_mode == "wss" {
         return Err("WSS/TCP selected by user".into());
     }
@@ -276,8 +296,15 @@ async fn connect_quic(
     for certificate in certificates.certs {
         let _ = roots.add(certificate);
     }
-    let client_config = quinn::ClientConfig::with_root_certificates(std::sync::Arc::new(roots))
+    let mut client_config = quinn::ClientConfig::with_root_certificates(std::sync::Arc::new(roots))
         .map_err(|e| e.to_string())?;
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    if transport_mode == "quic-compat" {
+        transport.initial_mtu(1200).min_mtu(1200).mtu_discovery_config(None);
+    }
+    client_config.transport_config(Arc::new(transport));
+    diagnostics::info("quic_config", &format!("mode={transport_mode} keepAliveSeconds=5 mtuDiscovery={}", transport_mode != "quic-compat"));
     let mut endpoint = Endpoint::client(
         "0.0.0.0:0"
             .parse()
@@ -297,7 +324,9 @@ async fn connect_quic(
         .map_err(|e| e.to_string())?
         .await
         .map_err(|e| e.to_string())?;
-    let (mut quic_tx, quic_rx) = connection.open_bi().await.map_err(|e| e.to_string())?;
+    let session = QuicSession { _endpoint: endpoint, connection };
+    session.log("handshake_complete");
+    let (mut quic_tx, quic_rx) = session.connection.open_bi().await.map_err(|e| e.to_string())?;
     let auth = serde_json::json!({"ticket":ticket}).to_string();
     write_quic_message(&mut quic_tx, Message::Text(auth.into())).await?;
     let tx = futures_util::sink::unfold(quic_tx, |mut stream, message| async move {
@@ -310,7 +339,7 @@ async fn connect_quic(
         Some((next, stream))
     })
     .boxed();
-    Ok((tx, rx, endpoint))
+    Ok((tx, rx, session))
 }
 
 async fn write_quic_message(
@@ -417,29 +446,31 @@ async fn run(
         .unwrap_or("http://localhost:8080")
         .trim_end_matches('/');
     let ws_endpoint = format!("{}/api/v1/game-relay", base.replacen("http", "ws", 1));
-    diagnostics::info("relay", "attempting QUIC/UDP game relay");
-    let quic_attempt = tokio::time::timeout(
-        Duration::from_secs(3),
-        connect_quic(base, &ticket, &transport_mode),
-    );
-    let (mut sink, mut source, _quic_endpoint, transport_name) = tokio::select! {
-        _ = &mut stop => return Ok(()),
-        result = quic_attempt => match result {
-            Ok(Ok((tx, rx, endpoint))) => {
+    let (mut sink, mut source, quic_session, transport_name) = if transport_mode == "wss" || !base.starts_with("https://") {
+        let (tx, rx) = tokio::select! {
+            _ = &mut stop => return Ok(()),
+            result = connect_websocket(&ws_endpoint, &ticket) => result?,
+        };
+        (tx, rx, None, "wss")
+    } else {
+        status.lock().unwrap().transport = "quic".into();
+        diagnostics::info("relay", "attempting QUIC/UDP game relay");
+        let attempt = tokio::select! {
+            _ = &mut stop => return Ok(()),
+            result = tokio::time::timeout(Duration::from_secs(3), connect_quic(base, &ticket, &transport_mode)) => result,
+        };
+        match attempt {
+            Ok(Ok((tx, rx, session))) => {
                 diagnostics::info("relay_transport", "QUIC/UDP connection established");
-                (tx, rx, Some(endpoint), "quic")
-            },
-            Ok(Err(error)) => {
-                diagnostics::info("relay_transport", &format!("QUIC unavailable; falling back to WSS: {error}"));
-                let (tx, rx) = connect_websocket(&ws_endpoint, &ticket).await?;
-                (tx, rx, None, "wss")
-            },
-            Err(_) => {
-                diagnostics::info("relay_transport", "QUIC handshake timed out; falling back to WSS");
-                let (tx, rx) = connect_websocket(&ws_endpoint, &ticket).await?;
-                (tx, rx, None, "wss")
-            },
-        },
+                (tx, rx, Some(session), "quic")
+            }
+            failed => {
+                let reason = match failed { Ok(Err(error)) => error, _ => "QUIC handshake timed out".into() };
+                status.lock().unwrap().fallback_eligible = true;
+                // The ticket may already have been consumed. The UI obtains a fresh one for WSS.
+                return Err(format!("QUIC connection failed: {reason}"));
+            }
+        }
     };
     diagnostics::info("relay", &format!("transport={transport_name}"));
     status.lock().unwrap().transport = transport_name.to_string();
@@ -479,14 +510,18 @@ async fn run(
         0xf7, 0x2f, 16, 0, b'P', b'X', b'3', b'W', 24, 0, 0, 0, 0, 0, 0, 0,
     ];
     let mut last_message = Instant::now();
+    let mut received_messages = 0u64;
+    let mut transport_failed = false;
     let mut last_ping_summary = Instant::now();
     let result: Result<(), String> = async {
         loop {
             tokio::select! {
                 _ = &mut stop => break Ok(()),
                 _ = tick.tick() => {
-                    if last_message.elapsed() > Duration::from_secs(35) { break Err("中转服务失去响应，请重新连接".into()); }
+                    if last_message.elapsed() > Duration::from_secs(35) { transport_failed = true; break Err("中转服务失去响应，请重新连接".into()); }
                     if last_relay_summary.elapsed() >= Duration::from_secs(15) {
+                        if let Some(session) = &quic_session { session.log("window"); }
+                        diagnostics::info("relay_receive", &format!("completeMessages={received_messages} lastMessageAgeMs={} ready={ready}",last_message.elapsed().as_millis()));
                         let snapshot = status.lock().unwrap();
                         diagnostics::info("game_relay_summary", &format!("role={} transport={} phase={} peers={} localTcpConnected={} activeGameStreams={} proxyPort={} advertisementCount={} localToRelayBytesWindow={} relayToLocalBytesWindow={} gameIdentity={:?}", snapshot.role, snapshot.transport, snapshot.phase, snapshot.peers, if host { !host_streams.is_empty() } else { tcp.is_some() }, host_streams.len().max(usize::from(tcp.is_some())), proxy_port, snapshot.advertisements, snapshot.sent_bytes.saturating_sub(previous_sent_bytes), snapshot.received_bytes.saturating_sub(previous_received_bytes), if host { host_game_identity } else { guest_game_identity }));
                         previous_sent_bytes = snapshot.sent_bytes;
@@ -550,6 +585,7 @@ async fn run(
                         diagnostics::info("game_tcp", &format!("event=guest_proxy_rejected alreadyConnected={} hasAdvertisement={} peerAddr={:?}", tcp.is_some(), advertisement.is_some(), socket.peer_addr().ok()));
                         drop(socket); continue;
                     }
+                    status.lock().unwrap().game_started = true;
                     socket.set_nodelay(true).map_err(|e|e.to_string())?;
                     stream_id = stream_id.wrapping_add(1).max(1);
                     diagnostics::info("game_tcp", &format!("event=guest_proxy_accepted streamId={stream_id} localAddr={:?} peerAddr={:?} gameIdentity={:?}", socket.local_addr().ok(), socket.peer_addr().ok(), guest_game_identity));
@@ -586,16 +622,17 @@ async fn run(
                 },
                 incoming = source.next() => {
                     let message = match incoming {
-                        None => { diagnostics::error("relay_transport", "event=relay_stream_ended direction=server_to_client"); return Err("中转连接已断开".into()); },
-                        Some(Err(error)) => { diagnostics::error("relay_transport", &format!("event=relay_stream_read_failed direction=server_to_client error={error}")); return Err(error); },
+                        None => { transport_failed = true; diagnostics::error("relay_transport", "event=relay_stream_ended direction=server_to_client"); return Err("中转连接已断开".into()); },
+                        Some(Err(error)) => { transport_failed = true; diagnostics::error("relay_transport", &format!("event=relay_stream_read_failed direction=server_to_client error={error}")); return Err(error); },
                         Some(Ok(message)) => message,
                     };
                     last_message = Instant::now();
+                    received_messages += 1;
                     match message {
                         Message::Ping(p) => {
                             let started = Instant::now();
                             let ping_id = p.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-                            send(&mut sink, Message::Pong(p)).await?;
+                            send(&mut sink, Message::Pong(p)).await.map_err(|error| { transport_failed = true; error })?;
                             let processing_ms = started.elapsed().as_secs_f64() * 1000.0;
                             let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                             let (summary, slow) = {
@@ -624,7 +661,7 @@ async fn run(
                                 Some("ping") => {
                                     if let Some(ping_id) = v["pingId"].as_str() {
                                         let started = Instant::now();
-                                        send(&mut sink, Message::Text(serde_json::json!({"type":"pong","pingId":ping_id}).to_string().into())).await?;
+                                        send(&mut sink, Message::Text(serde_json::json!({"type":"pong","pingId":ping_id}).to_string().into())).await.map_err(|error| { transport_failed = true; error })?;
                                         let processing_ms = started.elapsed().as_secs_f64() * 1000.0;
                                         let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                                         let (summary, slow) = {
@@ -711,7 +748,7 @@ async fn run(
                                         diagnostics::info("game_tcp", &format!("event=host_connect_attempt streamId={id} target=127.0.0.1:{} hostCounter={} entryKey={} advertisementAgeMs={}", info.port, info.host_counter, info.entry_key, seen.elapsed().as_millis()));
                                         let connect_started = Instant::now();
                                         match tokio::time::timeout(Duration::from_secs(3),TcpStream::connect((std::net::Ipv4Addr::LOCALHOST,info.port))).await {
-                                            Ok(Ok(socket)) => { let _ = socket.set_nodelay(true); diagnostics::info("game_tcp", &format!("event=host_connected streamId={id} target=127.0.0.1:{} elapsedMs={} localAddr={:?} activeStreamsBefore={}", info.port, connect_started.elapsed().as_millis(), socket.local_addr().ok(), host_streams.len())); let (command_tx, command_rx) = mpsc::channel(32); spawn_host_socket(socket,id,command_rx,host_event_tx.clone()); host_streams.insert(id,command_tx); update(&status,"forwarding","游戏 TCP 已连接；等待其他玩家加入"); },
+                                            Ok(Ok(socket)) => { status.lock().unwrap().game_started = true; let _ = socket.set_nodelay(true); diagnostics::info("game_tcp", &format!("event=host_connected streamId={id} target=127.0.0.1:{} elapsedMs={} localAddr={:?} activeStreamsBefore={}", info.port, connect_started.elapsed().as_millis(), socket.local_addr().ok(), host_streams.len())); let (command_tx, command_rx) = mpsc::channel(32); spawn_host_socket(socket,id,command_rx,host_event_tx.clone()); host_streams.insert(id,command_tx); update(&status,"forwarding","游戏 TCP 已连接；等待其他玩家加入"); },
                                             Ok(Err(error)) => { diagnostics::error("game_tcp", &format!("event=host_connect_failed streamId={id} target=127.0.0.1:{} elapsedMs={} error={error}", info.port, connect_started.elapsed().as_millis())); send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","无法连接本机游戏端口，请检查房主是否仍在建房"); },
                                             Err(_) => { diagnostics::error("game_tcp", &format!("event=host_connect_timeout streamId={id} target=127.0.0.1:{} timeoutMs=3000", info.port)); send(&mut sink, frame(3,id,&[])).await?; update(&status,"waiting","连接本机游戏端口超时，请检查房主是否仍在建房"); }
                                         }
@@ -745,6 +782,12 @@ async fn run(
             }
         }
     }.await;
+    {
+        let mut state = status.lock().unwrap();
+        state.fallback_eligible = transport_name == "quic" && transport_failed && !state.game_started;
+        diagnostics::info("relay_end", &format!("roomId={} transport={transport_name} gameStarted={} fallbackEligible={} completeMessages={received_messages} lastMessageAgeMs={} result={result:?}", state.room_id, state.game_started, state.fallback_eligible, last_message.elapsed().as_millis()));
+    }
+    if let Some(session) = &quic_session { session.log("relay_end"); }
     if let Some((p, _)) = advertisement {
         let mut remove = vec![0xf7, 0x33, 8, 0];
         remove.extend(&p[12..16]);

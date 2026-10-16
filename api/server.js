@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
+import { log, errorFields } from './logger.js'
 
 const { Pool } = pg
 const app = express()
@@ -24,6 +25,12 @@ const sockets = new Set()
 const hashSecret = (value) => createHash('sha256').update(value).digest('hex')
 const scrypt = promisify(scryptCallback)
 const authAttempts = new Map()
+
+app.use((req, res, next) => {
+  req.logRequestId = randomUUID()
+  res.setHeader('X-Request-Id', req.logRequestId)
+  next()
+})
 
 // Only the bundled Windows desktop origin may access the local API cross-origin.
 app.use((req, res, next) => {
@@ -111,8 +118,8 @@ function liveKitUrlForRequest(req) {
   return `${secure ? 'wss' : 'ws'}://${req.get('host')}`
 }
 
-subscriber.on('error', (error) => console.error('Redis subscriber:', error.message))
-redis.on('error', (error) => console.error('Redis:', error.message))
+subscriber.on('error', (error) => log('error', 'redis_subscriber_error', errorFields(error)))
+redis.on('error', (error) => log('error', 'redis_client_error', errorFields(error)))
 
 app.get('/health', asyncRoute(async (_, res) => {
   await db.query('SELECT 1')
@@ -125,7 +132,7 @@ app.post('/api/v1/auth/login', asyncRoute(async (req, res) => {
   const password = String(req.body.password || '')
   const key = `${req.ip}:${username}`; const now = Date.now(); const attempt = authAttempts.get(key)
   if (attempt?.blockedUntil > now) return res.status(429).json({ error: '登录尝试过多，请稍后再试' })
-  const { rows } = await db.query(`SELECT id,username,display_name AS "displayName",avatar,color,status,activity,password_hash AS "passwordHash" FROM users WHERE username=$1 AND id IN ('user-lin','user-mori')`, [username])
+  const { rows } = await db.query(`SELECT id,username,display_name AS "displayName",avatar,color,status,activity,password_hash AS "passwordHash" FROM users WHERE username=$1 AND password_hash IS NOT NULL`, [username])
   if (!await verifyPassword(password, rows[0]?.passwordHash)) {
     const inWindow = attempt?.windowStart > now - 15*60*1000
     const count = inWindow ? attempt.count + 1 : 1
@@ -418,8 +425,13 @@ app.post('/api/v1/game-rooms/:roomId/voice-token', asyncRoute(async (req, res) =
   res.json({ url: liveKitUrlForRequest(req), token: await token.toJwt(), room: room.voiceRoomId, expiresAt: new Date(Date.now() + 3600000).toISOString() })
 }))
 
-app.use((error, _, res, __) => {
-  console.error(error)
+app.use((error, req, res, __) => {
+  log('error', 'http_request_failed', {
+    request_id: req.logRequestId,
+    method: req.method,
+    path: req.path,
+    ...errorFields(error),
+  })
   res.status(error.code === '23505' ? 409 : error.code === '23503' ? 404 : 500).json({ error: error.code === '23505' ? '名称或语音关联已存在，请刷新后重试' : '服务器处理请求时发生错误' })
 })
 
@@ -454,8 +466,15 @@ async function start() {
   await subscriber.subscribe(EVENT_CHANNEL, (message) => {
     for (const socket of sockets) if (socket.readyState === 1 && socket.userId) socket.send(message)
   })
-  server.listen(PORT, '0.0.0.0', () => console.log(`Echo API listening on ${PORT}`))
+  server.listen(PORT, '0.0.0.0', () => log('info', 'api_listening', { port: PORT }))
 }
 
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { server.close(); await subscriber.quit(); await redis.quit(); await db.end(); process.exit(0) })
-start().catch((error) => { console.error(error); process.exit(1) })
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
+  log('info', 'api_shutdown_started', { signal })
+  server.close()
+  await subscriber.quit()
+  await redis.quit()
+  await db.end()
+  process.exit(0)
+})
+start().catch((error) => { log('fatal', 'api_start_failed', errorFields(error)); process.exit(1) })

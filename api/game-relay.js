@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws'
 import { randomBytes, createHash } from 'node:crypto'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
+import { log, errorFields } from './logger.js'
 
 // Single API instance, small-room multiplayer relay. No client-supplied targets.
 export function createGameRelay(db) {
@@ -29,7 +30,7 @@ export function createGameRelay(db) {
       let current
       try { current = await member(roomId, ws.memberId) }
       catch (error) {
-        console.error('Relay membership check failed; retaining active peer for retry', { roomId, memberId: ws.memberId, error: error.message })
+        log('error', 'relay_membership_check_failed', { room_id: roomId, member_id: ws.memberId, action: 'retain_active_peer_for_retry', ...errorFields(error) })
         continue
       }
       if (!current || (current.role === 'host') !== ws.isHost) ws.close(1008, 'Room membership changed')
@@ -55,8 +56,8 @@ export function createGameRelay(db) {
   }
   const diagnosticsTimer = setInterval(() => {
     const eventLoop = {
-      p95Ms: Number((eventLoopDelay.percentile(95) / 1e6).toFixed(1)),
-      maxMs: Number((eventLoopDelay.max / 1e6).toFixed(1)),
+      p95_ms: Number((eventLoopDelay.percentile(95) / 1e6).toFixed(1)),
+      max_ms: Number((eventLoopDelay.max / 1e6).toFixed(1)),
     }
     eventLoopDelay.reset()
     const now = performance.now()
@@ -65,27 +66,26 @@ export function createGameRelay(db) {
       const windowStart = Date.now() - 5 * 60 * 1000
       const samples = (ws.rttHistory || []).filter(sample => sample.at >= windowStart).map(sample => sample.rttMs).sort((a, b) => a - b)
       const missedPongs = ws.missedPongs || 0
-      console.info('Relay network diagnostic window', {
-        windowSeconds: 300,
-        roomId: ws.roomId,
-        memberId: ws.memberId,
+      log('info', 'relay_network_diagnostic_window', {
+        window_seconds: 300,
+        room_id: ws.roomId,
+        member_id: ws.memberId,
         role: ws.isHost ? 'host' : 'guest',
-        sampleCount: samples.length,
-        rttMs: samples.length ? {
+        sample_count: samples.length,
+        rtt_ms: samples.length ? {
           min: samples[0],
           median: percentile(samples, 0.5),
           p95: samples.length >= 40 ? percentile(samples, 0.95) : null,
           max: samples[samples.length - 1],
         } : null,
-        p95Status: samples.length >= 40 ? 'ready' : 'collecting-at-least-40-samples',
-        rttSamples: samples.length,
-        recentRttSamples: (ws.rttHistory || []).filter(sample => sample.at >= windowStart).slice(-12),
-        jitterMs: ws.jitterMs ?? null,
-        lastPongAgeMs: ws.lastPongAt === undefined ? null : Math.round(now - ws.lastPongAt),
-        missedPongsWindow: missedPongs - (ws.lastReportedMissedPongs || 0),
-        missedPongsTotal: missedPongs,
-        bufferedAmount: ws.bufferedAmount,
-        eventLoop,
+        p95_status: samples.length >= 40 ? 'ready' : 'collecting_at_least_40_samples',
+        recent_rtt_samples: (ws.rttHistory || []).filter(sample => sample.at >= windowStart).slice(-12).map(sample => ({ timestamp_unix_ms: sample.at, rtt_ms: sample.rttMs, ping_id: sample.pingId })),
+        jitter_ms: ws.jitterMs ?? null,
+        last_pong_age_ms: ws.lastPongAt === undefined ? null : Math.round(now - ws.lastPongAt),
+        missed_pongs_window: missedPongs - (ws.lastReportedMissedPongs || 0),
+        missed_pongs_total: missedPongs,
+        buffered_amount_bytes: ws.bufferedAmount,
+        event_loop: eventLoop,
       })
       ws.lastReportedMissedPongs = missedPongs
     }
@@ -130,6 +130,17 @@ export function createGameRelay(db) {
           let room = rooms.get(ticket.roomId)
           if (!room) { room = { peers: new Map(), streams: new Map(), nextStreamId: 0 }; rooms.set(ticket.roomId, room) }
           const isHost = current.role === 'host'
+          const previous = room.peers.get(ticket.memberId)
+          if (previous) {
+            // Fresh authenticated ticket may replace a stranded pre-game transport.
+            // Never replace a connection owning an active Warcraft stream.
+            const inGame = previous.isHost ? room.streams.size > 0 : [...room.streams.values()].some(stream => stream.guestMemberId === ticket.memberId)
+            if (inGame) return ws.close(1008, 'Member has an active game stream')
+            room.peers.delete(ticket.memberId)
+            log('info', 'relay_idle_transport_replaced', { room_id: ticket.roomId, member_id: ticket.memberId })
+            previous.replaced = true
+            previous.terminate()
+          }
           const guestCount = [...room.peers.values()].filter(peer => !peer.isHost).length
           if (room.peers.has(ticket.memberId) || (isHost && [...room.peers.values()].some(peer => peer.isHost)) || (!isHost && guestCount >= 7)) return ws.close(1008, 'Relay room is full or member is already connected')
           Object.assign(ws, { roomId: ticket.roomId, memberId: ticket.memberId, isHost })
@@ -139,6 +150,7 @@ export function createGameRelay(db) {
           publishNetwork(room)
           return
         }
+        if (rooms.get(ws.roomId)?.peers.get(ws.memberId) !== ws) return
         if (!binary) {
           const control = JSON.parse(data.toString())
           if (control.type === 'pong' && typeof control.pingId === 'string') {
@@ -165,6 +177,7 @@ export function createGameRelay(db) {
         bytes += data.length; frames++
         if (bytes > 2*1024*1024 || frames > 512) return ws.close(1008, 'Relay rate limit')
         const room = rooms.get(ws.roomId); if (!room) return ws.close()
+        if (rooms.get(ws.roomId)?.peers.get(ws.memberId) !== ws) return
         if (!binary) {
           if (!ws.isHost || data.length > 12000) return ws.close(1008, 'Invalid advertisement')
           const m = JSON.parse(data.toString())
@@ -218,16 +231,16 @@ export function createGameRelay(db) {
         const forwarded = Buffer.from(data); forwarded.writeUInt32LE(streamId, 1); send(host, forwarded, true)
         if (kind === 3) room.streams.delete(streamId)
       } catch (error) {
-        console.error('Relay request rejected', { roomId: ws.roomId, memberId: ws.memberId, error: error.message })
+        log('warn', 'relay_request_rejected', { room_id: ws.roomId, member_id: ws.memberId, ...errorFields(error) })
         ws.close(1008, 'Invalid relay request')
       }
     })
-    ws.on('error', error => console.warn('Relay WebSocket error', { roomId: ws.roomId, memberId: ws.memberId, error: error.message }))
+    ws.on('error', error => log('warn', 'relay_websocket_error', { room_id: ws.roomId, member_id: ws.memberId, ...errorFields(error) }))
     ws.on('close', (code, reason) => {
       clearTimeout(authTimeout)
-      console.warn('Relay peer disconnected', { roomId: ws.roomId, memberId: ws.memberId, role: ws.isHost ? 'host' : 'guest', code, reason: reason.toString(), rttMs: ws.rttMs ?? null, missedPongs: ws.missedPongs || 0 })
+      log('warn', 'relay_peer_disconnected', { room_id: ws.roomId, member_id: ws.memberId, role: ws.isHost ? 'host' : 'guest', close_code: code, close_reason: reason.toString(), replaced: Boolean(ws.replaced), rtt_ms: ws.rttMs ?? null, missed_pongs: ws.missedPongs || 0 })
       if (!joined) return
-      const room = rooms.get(ws.roomId); if (!room) return
+      const room = rooms.get(ws.roomId); if (!room || room.peers.get(ws.memberId) !== ws) return
       room.peers.delete(ws.memberId)
       if (ws.isHost) {
         // A host owns the Warcraft listener; guests cannot continue without it.
@@ -259,7 +272,7 @@ export function createGameRelay(db) {
         ws.consecutiveMissedPongs++
       }
       if (ws.consecutiveMissedPongs >= 3) {
-        console.warn('Relay peer missed three heartbeat windows', { roomId: ws.roomId, memberId: ws.memberId, missedPongs: ws.missedPongs })
+        log('warn', 'relay_peer_missed_heartbeats', { room_id: ws.roomId, member_id: ws.memberId, missed_pongs: ws.missedPongs, consecutive_missed_pongs: ws.consecutiveMissedPongs })
         ws.terminate()
         continue
       }
@@ -271,7 +284,7 @@ export function createGameRelay(db) {
     }
     for (const id of rooms.keys()) {
       try { await reconcile(id) }
-      catch (error) { console.error('Relay membership reconciliation failed; keeping active peers', { roomId: id, error: error.message }) }
+      catch (error) { log('error', 'relay_membership_reconciliation_failed', { room_id: id, action: 'keep_active_peers', ...errorFields(error) }) }
     }
   }, 5000)
   timer.unref()

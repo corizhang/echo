@@ -19,7 +19,7 @@
 - API 每 30 秒记录最近 5 分钟各连接 RTT 样本的最小值、中位数、P95、最大值，以及心跳超时增量、WebSocket 排队字节数和 Node 事件循环 P95/最大延迟。样本不足 40 个时不报告 P95；日志保留最近 12 个带 Ping ID 的样本便于与客户端记录对照。
 - Windows 客户端在联机面板提供最近 5 分钟 RTT 图表与样本统计，并每 30 秒在 `%APPDATA%\app.echo.squad\logs\echo-diagnostics.log` 记录本机 Ping 接收后发送 Pong 的耗时摘要；超过 5 ms 的单次处理会额外记录。
 - 联机诊断日志还会记录 `game_advertisement` 的 `hostCounter`、`entryKey`、游戏端口/本地代理端口和广播摘要，用于判断同一个房间是否出现多个游戏标识；`game_tcp` 会记录代理接受、房主连接本机魔兽端口的结果/耗时、读写失败以及关闭方向。不会记录房间票据、聊天内容或游戏数据负载。
-- QUIC relay 服务端日志按 15 秒窗口记录客户端与 API 之间的游戏帧数/字节数、控制帧及 QUIC 帧读取错误原因。排查 `connection lost` 时，将两端 `echo-diagnostics.log` 的 `game_tcp`、`relay_transport` 事件与 `docker compose logs --since=10m api game-quic-relay` 中的 peer disconnect 和 QUIC relay session 事件按时间及 roomId 对齐。
+- QUIC relay 服务端以 JSON Lines 按 15 秒窗口记录客户端与 API 之间的游戏帧数/字节数、控制帧及 QUIC 帧读取错误原因。排查 `connection lost` 时，将两端 `echo-diagnostics.log` 的 `game_tcp`、`relay_transport` 事件与 `docker compose logs --since=10m --no-log-prefix api game-quic-relay` 中 `event=relay_peer_disconnected`、`quic_session_closed`、`quic_traffic_window` 等事件按 `timestamp_unix_ms`、`room_id` 和 `instance` 对齐。
 - 对照相同 Ping ID：服务端 RTT 尖峰而客户端 Ping/Pong 处理耗时正常，偏向公网路径延迟；服务端事件循环延迟也高，检查 VPS/API 调度；客户端处理耗时高，检查 Windows 客户端调度。客户端计时从收到 Ping 才开始，不能单独测出 Ping 到达客户端前的公网耗时。
 - API 日志记录中转连接关闭码、原因、最后测得 RTT 和心跳超时数，可用 `docker compose logs --since=10m api` 查看。
 - 游戏 TCP 流断开后目前不能恢复原有魔兽对局；即使重新连接中转，也需要回到游戏内重新建图或加入。
@@ -52,7 +52,7 @@ sudo bash deploy/setup-quic-cert-sync.sh echo.corionline.com ~/echo
 sudo ufw allow 40000/udp
 ```
 
-如果 Caddy 使用了非默认数据目录，把它作为第三个参数传入，例如 `sudo bash deploy/setup-quic-cert-sync.sh echo.corionline.com ~/echo /custom/caddy/data`。云厂商安全组也需要添加 UDP 40000 入站规则。脚本只需安装一次；后续证书续期由 Caddy 自动完成，脚本负责同步并重启 QUIC relay。若玩家网络屏蔽 UDP，客户端会在连接阶段记录 QUIC 失败并回退 WSS；若 UDP 已建立后中途断开，需要重新连接中转并在游戏内重新加入。
+如果 Caddy 使用了非默认数据目录，把它作为第三个参数传入，例如 `sudo bash deploy/setup-quic-cert-sync.sh echo.corionline.com ~/echo /custom/caddy/data`。云厂商安全组也需要添加 UDP 40000 入站规则。脚本只需安装一次；后续证书续期由 Caddy 自动完成，脚本负责同步并重启 QUIC relay。若 QUIC 握手失败或入局前连接失去响应，客户端使用新票据自动回退 WSS 一次；已有游戏连接时不会自动切换，需要手动重新连接并在游戏内重新加入。
 
 现有业务账号仍是开发身份，因此本版本只适合受控实验，公开部署前必须补齐账号认证。未自动部署公网服务或更改 Windows 防火墙。
 
@@ -97,3 +97,27 @@ sudo ufw allow 40000/udp
 参考 Discord 将活动入口与房间成员放在同一交流空间的方式（[官方 Activities 说明](https://discord.com/blog/server-activities-games-voice-watch-together)），保留现有小队侧栏，中央从上到下为房间信息、成员槽位、游戏启动与网络状态、语音控制、房间聊天。高级诊断折叠，避免完整日志占据主要操作区域。
 
 本阶段不添加没有后端状态支持的“全部就绪”或“已进入游戏”标识。玩家卡片上的连接状态只表示 Echo 中转通道状态；高延迟以颜色提醒并保留数值，房主仍在魔兽内决定何时开局。
+
+
+## QUIC 持续传输故障诊断与兼容模式
+
+针对“QUIC 收到 ready 后失联、WSS 正常”的情况，两端现在每约 15 秒及结束时记录 QUIC 底层累计统计：UDP 收发包/字节数、STREAM/ACK 帧数、路径 RTT、判定丢失的包数、拥塞事件、MTU 探测与黑洞次数、当前 MTU、关闭原因。丢包计数不是精确的重传次数。应用层另记完整消息数及距最后完整消息的毫秒数；UDP 包增长但完整消息不增长时，应继续区分 ACK/保活与 STREAM 数据、解析等待。日志不记录票据或消息正文。
+
+标准与兼容模式都启用 5 秒空闲保活。兼容模式额外关闭 MTU 探测，固定发送 UDP 负载为 1200 字节，仅用于对照排查，不保证修复线路故障。两端方向独立，必须同时调整客户端与服务端。
+
+1. 在 VPS 的 `~/echo/.env` 添加或修改 `ECHO_QUIC_TRANSPORT_MODE=compat`。
+2. 更新本次代码后执行以下命令（重建中转会断开现有联机，先结束对局）：
+
+```bash
+cd ~/echo
+docker compose --profile quic up -d --build api web game-quic-relay
+docker compose logs --timestamps --since=5m api game-quic-relay
+```
+
+3. 所有参与对照的 Windows 客户端使用新版，在房间「网络诊断 → 传输偏好」选「QUIC 兼容模式」，暂停后重新连接。已强制 WSS 的设置不会被更新覆盖，需手动改选。
+4. 先空闲观察 3～5 分钟，再进入游戏。确认面板实际仍为 QUIC；自动回退后的 WSS 成功不算 QUIC 修复。
+5. 同时保存 Windows 的 `echo-diagnostics.log` 和 VPS JSON Lines 日志。客户端找 `quic_config`、`quic_stats`、`relay_receive`、`relay_end`；服务端找 `event=quic_transport_config`、`quic_connection_stats`、`quic_application_receive_window`、`quic_traffic_window`。配置成功时 `quic_transport_config` 应包含 `mode=compat`、`mtu_discovery=false`、`keep_alive_seconds=5`。QUIC 内部详细统计目前位于 `stats_text` 字符串字段，后续如需仪表盘分析再拆成独立数值字段。
+
+恢复标准模式：VPS 改 `ECHO_QUIC_TRANSPORT_MODE=standard` 并重建 game-quic-relay；客户端改「自动」。
+
+自动回退仅用于握手/接收传输失败，且此连接从未接入游戏 TCP 流。每轮连接最多回退一次，重新获取一次性票据；房间鉴权拒绝、主动暂停、已接入游戏均不自动回退。服务端允许有效新票据替换同一成员未承载游戏流的旧通道，旧通道关闭事件不能删除新通道；已有游戏流时拒绝替换。该逻辑的本地检查为 `node scripts/check-auto-relay.mjs` 和 `node scripts/check-relay-replacement.mjs`。

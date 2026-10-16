@@ -4,8 +4,9 @@
   const diagnosticsPanel = document.querySelector('#relay-diagnostics'), chart = document.querySelector('#relay-rtt-chart')
   const diagnosticsSummary = document.querySelector('#relay-diagnostics-summary'), clientPingSummary = document.querySelector('#relay-client-ping-summary')
   const transportMode = document.querySelector('#relay-transport-mode')
-  let room, desiredRoom = null, pausedRoom = null, attemptedKey = null, status = { phase: 'idle' }, busy = false, polling = false, mutationEpoch = 0
-  if (transportMode) transportMode.value = localStorage.getItem('echo-relay-transport-mode') === 'wss' ? 'wss' : 'auto'
+  let room, desiredRoom = null, pausedRoom = null, attemptedKey = null, fallbackKey = null, status = { phase: 'idle' }, busy = false, polling = false, mutationEpoch = 0
+  const savedMode = localStorage.getItem('echo-relay-transport-mode')
+  if (transportMode) transportMode.value = ['wss', 'quic-compat'].includes(savedMode) ? savedMode : 'auto'
   transportMode?.addEventListener('change', () => localStorage.setItem('echo-relay-transport-mode', transportMode.value))
   const active = () => !['idle','error'].includes(status.phase)
   const diagnostic = (message) => invoke?.('write_client_log', { message: `relay-ui ${message}` }).catch(() => {})
@@ -58,7 +59,7 @@
       return Number.isFinite(hostRtt) && Number.isFinite(peer.rttMs) ? `${name}约 ${hostRtt + peer.rttMs} ms` : null
     }).filter(Boolean)
     const estimate = estimates.length ? ` · 房主至玩家往返估算 ${estimates.join(' / ')}` : ''
-    const transport = status.transport === 'quic' ? 'QUIC/UDP' : status.transport === 'wss' ? 'WSS/TCP（回退）' : '连接中'
+    const transport = status.transport === 'quic' ? 'QUIC/UDP' : status.transport === 'wss' ? (fallbackKey === `${status.roomId}:${status.role}` ? 'WSS/TCP（自动回退）' : 'WSS/TCP') : '连接中'
     metrics.textContent = `${transport} · ${latency || '正在测量到中转延迟'}${estimate} · 中转端点 ${status.peers || 0}/8 · 对局广播 ${status.advertisements || 0} 次 · 发送 ${((status.sentBytes || 0)/1024).toFixed(1)} KB / 接收 ${((status.receivedBytes || 0)/1024).toFixed(1)} KB`
     renderDiagnostics(self)
   }
@@ -90,7 +91,7 @@
         status = { phase: 'connecting', roomId: target.id, role: target.role, detail: '正在连接房间网络…' }; render()
         const ticket = await window.EchoApi.getGameRelayTicket(target.id)
         if (desiredRoom?.id !== target.id || desiredRoom?.role !== target.role || pausedRoom === target.id) return
-        await invoke('start_relay', { roomId: target.id, ticket: ticket.ticket, transportMode: transportMode?.value || 'auto' })
+        await invoke('start_relay', { roomId: target.id, ticket: ticket.ticket, transportMode: fallbackKey === key ? 'wss' : transportMode?.value || 'auto' })
         if (desiredRoom?.id !== target.id || desiredRoom?.role !== target.role) await stopRelay()
       }
       status = await invoke('relay_status')
@@ -111,7 +112,7 @@
   })
   window.addEventListener('echo:room-left', event => {
     if (desiredRoom?.id === event.detail || status.roomId === event.detail) {
-      desiredRoom = null; pausedRoom = null; attemptedKey = null; reconcile()
+      desiredRoom = null; pausedRoom = null; attemptedKey = null; fallbackKey = null; reconcile()
     }
   })
   button.onclick = async () => {
@@ -122,14 +123,24 @@
       catch (error) { window.EchoApp?.toast(String(error)) }
       finally { busy = false; render(); reconcile() }
     } else if (room?.joined) {
-      desiredRoom = { ...room, role: room.role === 'host' ? 'host' : 'guest' }; pausedRoom = null; attemptedKey = null; reconcile()
+      desiredRoom = { ...room, role: room.role === 'host' ? 'host' : 'guest' }; pausedRoom = null; attemptedKey = null; fallbackKey = null; reconcile()
     }
+  }
+  async function maybeFallback() {
+    const target = desiredRoom
+    const key = target ? `${target.id}:${target.role}` : null
+    if (!target || busy || pausedRoom === target.id || fallbackKey === key || transportMode?.value === 'wss') return
+    if (status.roomId !== target.id || status.phase !== 'error' || status.transport !== 'quic' || status.fallbackEligible !== true || status.gameStarted) return
+    fallbackKey = key; attemptedKey = null
+    diagnostic(`fallback room=${target.id} from=quic to=wss reason=${status.detail}`)
+    window.EchoApp?.toast('QUIC 连接不可用，正在切换到 WSS…')
+    await reconcile()
   }
   if (invoke) setInterval(async () => {
     if (polling || busy) return
     polling = true
     const epoch = mutationEpoch
-    try { const next = await invoke('relay_status'); if (epoch !== mutationEpoch) return; if (!(next.phase === 'idle' && status.phase === 'error')) status = next; render() } catch (error) { detail.textContent = String(error) }
+    try { const next = await invoke('relay_status'); if (epoch !== mutationEpoch) return; if (!(next.phase === 'idle' && status.phase === 'error')) status = next; render(); await maybeFallback() } catch (error) { detail.textContent = String(error) }
     finally { polling = false }
   }, 1000)
   render()

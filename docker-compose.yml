@@ -18,6 +18,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: 3000
+      ECHO_INSTANCE_ID: ${ECHO_INSTANCE_ID:-local}
       DATABASE_URL: postgres://echo:${POSTGRES_PASSWORD}@postgres:5432/echo
       REDIS_URL: redis://redis:6379
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
@@ -45,6 +46,8 @@ services:
     restart: unless-stopped
     environment:
       QUIC_BIND: 0.0.0.0:40000
+      ECHO_INSTANCE_ID: ${ECHO_INSTANCE_ID:-local}
+      QUIC_TRANSPORT_MODE: ${ECHO_QUIC_TRANSPORT_MODE:-standard}
       QUIC_CERT_FILE: /run/certs/echo.crt
       QUIC_KEY_FILE: /run/certs/echo.key
       ECHO_API_WS_URL: ws://api:3000/api/v1/game-relay
