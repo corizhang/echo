@@ -29,7 +29,15 @@
 docker compose up -d --build
 ```
 
-浏览器打开 `http://localhost:8080`。栈包括 Web/Nginx、Node API、PostgreSQL、Redis、LiveKit；Web 消息和频道会写入数据库并由 WebSocket 推送，语音使用 LiveKit/WebRTC。点击左下角齿轮打开语音设置：先运行麦克风测试并查看输入电平，再选输出设备并播放测试音。外网访问时需使用 HTTPS，浏览器才会提供媒体设备权限和设备列表。`docker compose logs -f` 查看日志，`docker compose down` 停止；持久化数据保存在 Compose volumes。清空数据库需显式删除 `postgres-data` volume。
+浏览器打开 `http://localhost:8080`。栈包括 Web/Nginx、Node API、PostgreSQL、Redis、LiveKit；Web 消息和频道会写入数据库并由 WebSocket 推送，语音使用 LiveKit/WebRTC。文字频道支持 PNG、JPEG、GIF、WebP 图片；文件持久化在 `echo-uploads` volume，备份时需和数据库一并备份。点击左下角齿轮打开语音设置：先运行麦克风测试并查看输入电平，再选输出设备并播放测试音。外网访问时需使用 HTTPS，浏览器才会提供媒体设备权限和设备列表。`docker compose logs -f` 查看日志，`docker compose down` 停止；持久化数据保存在 Compose volumes。清空数据库需显式删除 `postgres-data` volume。
+
+## AI 机器人（初始阶段）
+
+系统默认与个人表情库、机器人默认/专属图库的页面管理方法见 [表情库管理指南](docs/sticker-library-management.md)；Echo 与 dafeiyu-bot 的机器人能力对照见 [AI 机器人能力评估](docs/ai-agent-and-expression-assets.md)。
+
+Web 设置中的“AI 机器人”目前支持管理鲸鱼娘、创建机器人、编辑人设和模型、授权文字频道，以及私聊和 `@机器人名称` 群聊。创建机器人后默认不授权任何频道；管理员明确勾选后才会响应。图片理解和联网搜索是可单独授权的内置能力，默认关闭。图片理解开启后只会将当前消息图片和明确回复引用的原消息图片（合计最多 4 张、12 MiB）发送给 DeepSeek Flash，不会扫描频道其他历史图片或私聊图片。要让机器人看之前发的图，在原图片消息上点“回复”，然后在回复里 @ 机器人。联网搜索开启后，模型按需调用 DeepSeek Search，普通闲聊不会搜索；每次成功搜索约 $0.75/1,000 次，回复会附来源链接。搜索词会发送给 DeepSeek。直接通过 `file://` 打开时使用本地 Mock 对话与模拟连接测试；HTTP/Docker 模式才会调用真实 DeepSeek API。
+
+保存真实 API Key 前，必须给 API 容器配置持久的 32 字节加密密钥。PowerShell 可运行 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 生成 64 位十六进制字符串，把它写入 `.env` 的 `ECHO_AI_ENCRYPTION_KEY`，然后重建 API：`docker compose up -d --build api`。VPS 也必须设置相同格式的值。请备份此密钥并保持稳定；更换后，之前保存的供应商 Key 将无法解密。机器人设置只会在 TLS 页面上提交一次 API Key，服务端加密后保存，界面/API 不提供读回。
 
 Cloudflare Tunnel 默认不启动。实时语音媒体需要 LiveKit 的公网 UDP 媒体端口；普通 HTTP Tunnel 不转发该 UDP 流量。当前账号系统面向两位好友的封闭测试，尚无管理员账号管理、密码重置和扩展成员能力；公网部署前请配置唯一强密码、正确的 LiveKit 公网地址/UDP 端口和防火墙规则。
 

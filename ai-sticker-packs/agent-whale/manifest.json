@@ -1,0 +1,129 @@
+{
+  "agentId": "agent-whale",
+  "source": "https://fisharchive.cc/",
+  "license": {
+    "name": "CC BY-NC-SA 4.0",
+    "url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    "note": "角色二次设计依 CC BY-NC-SA 4.0；单张作品的相关权利归各自创作者。"
+  },
+  "groups": [
+    {
+      "key": "cute",
+      "emotion": "cute",
+      "name": "卖萌",
+      "items": [
+        {
+          "key": "015-deepseek-baozhe-jingyu-shuijiao",
+          "name": "鲸鱼娘抱着鲸鱼枕头睡得香，今日KPI是长大。",
+          "description": "鲸鱼娘抱着鲸鱼枕头睡得香，今日KPI是长大。（标签：卖萌、睡觉）",
+          "file": "015-deepseek-baozhe-jingyu-shuijiao.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-baozhe-jingyu-shuijiao.webp",
+          "tags": [
+            "卖萌",
+            "睡觉"
+          ]
+        },
+        {
+          "key": "017-deepseek-baozhe-weiba",
+          "name": "鲸鱼娘抱紧鲸鱼尾眯眼笑：这波可爱值直接跑满",
+          "description": "鲸鱼娘抱紧鲸鱼尾眯眼笑：这波可爱值直接跑满（标签：开心、卖萌）",
+          "file": "017-deepseek-baozhe-weiba.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-baozhe-weiba.png",
+          "tags": [
+            "开心",
+            "卖萌"
+          ]
+        },
+        {
+          "key": "025-deepseek-biancheng-dafeiyu",
+          "name": "大肥鱼圆滚滚地瘫着：这下深度思考都得浮起来",
+          "description": "大肥鱼圆滚滚地瘫着：这下深度思考都得浮起来（标签：搞笑、卖萌）",
+          "file": "025-deepseek-biancheng-dafeiyu.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-biancheng-dafeiyu.png",
+          "tags": [
+            "搞笑",
+            "卖萌"
+          ]
+        },
+        {
+          "key": "026-deepseek-binghongcha-guantou",
+          "name": "蓝色大肥鱼变身劲凉冰红茶罐，降温KPI她一口气包圆",
+          "description": "蓝色大肥鱼变身劲凉冰红茶罐，降温KPI她一口气包圆（标签：搞笑、卖萌）",
+          "file": "026-deepseek-binghongcha-guantou.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-binghongcha-guantou.png",
+          "tags": [
+            "搞笑",
+            "卖萌"
+          ]
+        },
+        {
+          "key": "028-deepseek-biye-ciallo",
+          "name": "鲸鱼娘眨眼比耶露出鲸鱼尾，Ciallo一声甜度超标",
+          "description": "鲸鱼娘眨眼比耶露出鲸鱼尾，Ciallo一声甜度超标（标签：开心、卖萌、打招呼）",
+          "file": "028-deepseek-biye-ciallo.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-biye-ciallo.webp",
+          "tags": [
+            "开心",
+            "卖萌",
+            "打招呼"
+          ]
+        },
+        {
+          "key": "043-deepseek-chi-baobao-mo-duzi",
+          "name": "大肥鱼躺着拍拍肚子眯眼笑：本轮投喂任务圆满收工。",
+          "description": "大肥鱼躺着拍拍肚子眯眼笑：本轮投喂任务圆满收工。（标签：卖萌、吃饭）",
+          "file": "043-deepseek-chi-baobao-mo-duzi.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-chi-baobao-mo-duzi.webp",
+          "tags": [
+            "卖萌",
+            "吃饭"
+          ]
+        },
+        {
+          "key": "052-deepseek-dadebulaile",
+          "name": "鲸鱼娘攥着小拳头笑眯眯：大的不来了，今天主打一个小而美。",
+          "description": "鲸鱼娘攥着小拳头笑眯眯：大的不来了，今天主打一个小而美。（标签：卖萌、敷衍）",
+          "file": "052-deepseek-dadebulaile.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-dadebulaile.webp",
+          "tags": [
+            "卖萌",
+            "敷衍"
+          ]
+        },
+        {
+          "key": "066-deepseek-dingzhe-wenhao",
+          "name": "蓝色大肥鱼歪眼盯着问号，深度思考把CPU烧成问号。",
+          "description": "蓝色大肥鱼歪眼盯着问号，深度思考把CPU烧成问号。（标签：疑惑、卖萌）",
+          "file": "066-deepseek-dingzhe-wenhao.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-dingzhe-wenhao.jpg",
+          "tags": [
+            "疑惑",
+            "卖萌"
+          ]
+        },
+        {
+          "key": "068-deepseek-duan-jingyuwan",
+          "name": "deepseek娘端着鲸鱼大碗上门：这一碗，KPI 管饱。",
+          "description": "deepseek娘端着鲸鱼大碗上门：这一碗，KPI 管饱。（标签：卖萌、吃饭）",
+          "file": "068-deepseek-duan-jingyuwan.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-duan-jingyuwan.webp",
+          "tags": [
+            "卖萌",
+            "吃饭"
+          ]
+        },
+        {
+          "key": "069-deepseek-duan-wan-chi-fan",
+          "name": "大肥鱼抱着白饭碗腮帮鼓鼓，算力今天全炫进肚里",
+          "description": "大肥鱼抱着白饭碗腮帮鼓鼓，算力今天全炫进肚里（标签：卖萌、吃饭）",
+          "file": "069-deepseek-duan-wan-chi-fan.webp",
+          "sourceUrl": "https://fisharchive.cc/media/deepseek-duan-wan-chi-fan.jpg",
+          "tags": [
+            "卖萌",
+            "吃饭"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -35,7 +35,8 @@ CREATE TABLE messages (
   id text PRIMARY KEY,
   channel_id text NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   author_id text NOT NULL REFERENCES users(id),
-  content text NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
+  content text NOT NULL CHECK (length(content) <= 4000),
+  mentions jsonb NOT NULL DEFAULT '[]'::jsonb,
   reply_to jsonb,
   pinned boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -49,6 +50,21 @@ CREATE TABLE reactions (
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (message_id, user_id, emoji)
 );
+
+CREATE TABLE message_attachments (
+  id text PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message_id text REFERENCES messages(id) ON DELETE CASCADE,
+  file_name text NOT NULL,
+  mime_type text NOT NULL CHECK (mime_type IN ('image/png','image/jpeg','image/gif','image/webp','audio/webm','audio/ogg','audio/mp4','audio/mpeg','audio/wav')),
+  size_bytes integer NOT NULL CHECK (size_bytes BETWEEN 1 AND 8388608),
+  storage_key text NOT NULL UNIQUE,
+  duration_ms integer,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX message_attachments_message ON message_attachments(message_id);
+CREATE INDEX message_attachments_owner_pending ON message_attachments(owner_user_id, created_at) WHERE message_id IS NULL;
 
 INSERT INTO users (id, username, display_name, avatar, color, status, activity) VALUES
   ('user-lin', 'lin', 'Lin', 'L', 'blue', 'online', NULL),

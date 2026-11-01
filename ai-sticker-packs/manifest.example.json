@@ -1,0 +1,31 @@
+{
+  "agentId": "agent-id-from-ai_agents-table",
+  "groups": [
+    {
+      "key": "happy",
+      "emotion": "happy",
+      "name": "开心",
+      "items": [
+        {
+          "key": "happy-01",
+          "name": "笑出声",
+          "description": "开心大笑，适合朋友间轻松庆祝。",
+          "file": "happy-01.webp"
+        }
+      ]
+    },
+    {
+      "key": "comfort",
+      "emotion": "comfort",
+      "name": "安慰",
+      "items": [
+        {
+          "key": "comfort-01",
+          "name": "抱抱",
+          "description": "温柔安慰朋友或表达支持。",
+          "file": "comfort-01.png"
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,7 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       ECHO_TEST_LIN_PASSWORD: ${ECHO_TEST_LIN_PASSWORD}
       ECHO_TEST_MORI_PASSWORD: ${ECHO_TEST_MORI_PASSWORD}
+      ECHO_AI_ENCRYPTION_KEY: ${ECHO_AI_ENCRYPTION_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,6 +38,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 12
+    volumes:
+      - echo-uploads:/app/uploads
+      - ./expression-packs:/app/expression-packs:ro
+      - ./ai-sticker-packs:/app/ai-sticker-packs:ro
     networks: [echo]
 
   game-quic-relay:
@@ -124,3 +129,4 @@ networks:
 volumes:
   postgres-data:
   redis-data:
+  echo-uploads:

@@ -1,0 +1,17 @@
+{
+  "serverId": "server-squad",
+  "groups": [
+    {
+      "key": "starter-stickers",
+      "kind": "sticker",
+      "name": "内置表情包",
+      "items": []
+    },
+    {
+      "key": "starter-emoji",
+      "kind": "emoji",
+      "name": "内置 Emoji",
+      "items": []
+    }
+  ]
+}

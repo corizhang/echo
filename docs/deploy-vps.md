@@ -33,11 +33,14 @@ LIVEKIT_API_KEY=<使用随机字母数字生成>
 LIVEKIT_API_SECRET=<使用 openssl rand -hex 32 生成>
 ECHO_TEST_LIN_PASSWORD=<lin 测试账号专用密码，至少 16 位>
 ECHO_TEST_MORI_PASSWORD=<mori 测试账号专用密码，至少 16 位>
+ECHO_AI_ENCRYPTION_KEY=<使用 openssl rand -hex 32 生成并妥善备份>
 ```
 
 将两个密码分别生成并妥善保存；服务不会返回或显示原始密码。每次修改 `.env` 中的账号密码后重建 API，旧会话会自动撤销：`docker compose up -d --build api`。登录名为 `lin` 和 `mori`，没有注册入口。
 
 `CLOUDFLARE_TUNNEL_TOKEN` 可留空；本方案由 VPS 上的 Caddy 处理 HTTPS，不需要 Cloudflare Tunnel。永远不要提交 `.env`。
+
+`ECHO_AI_ENCRYPTION_KEY` 用于加密 Echo 中保存的 AI 供应商 API Key。创建/轮换该值后重建 API：`docker compose up -d --build api`。必须备份并保持该值稳定；丢失或更换后，已保存的 AI Key 无法恢复，只能重新录入。只有通过 HTTPS 访问机器人设置页时才应录入真实 API Key。
 
 ```bash
 docker compose up -d --build
@@ -138,7 +141,7 @@ npm run build:desktop
 
 ## 更新和备份
 
-更新代码前先备份数据库，再执行 `git pull --ff-only` 与 `docker compose up -d --build`。Postgres/Redis 数据保存在 Docker volumes；容器重建不会自动清除 volume，但应定期做异机备份并验证恢复。不要执行带 `-v` 的 `docker compose down`，除非明确要删除数据。
+更新代码前先备份数据库与图片卷，再执行 `git pull --ff-only` 与 `docker compose up -d --build`。Postgres/Redis 数据和用户上传图片分别保存在 `postgres-data`、`redis-data`、`echo-uploads` Docker volumes；容器重建不会自动清除 volume，但应定期做异机备份并验证恢复。不要执行带 `-v` 的 `docker compose down`，除非明确要删除数据。
 
 ## 后续必须补齐
 
@@ -157,6 +160,99 @@ git pull --ff-only
 docker compose up -d --build
 docker compose ps
 ```
+
+## 配置内置表情和分组
+
+内置表情包和 Emoji 由服务器上的资源清单管理，存放在项目目录 `expression-packs/<小队ID>/`。Compose 已将 `expression-packs/` 挂载为 API 容器只读目录；VPS 更新代码后会创建默认的 `expression-packs/server-squad/manifest.json`。编辑它可以加入分组和资源，例如：
+
+```json
+{
+  "serverId": "server-squad",
+  "groups": [
+    {
+      "key": "warcraft-reactions",
+      "kind": "sticker",
+      "name": "魔兽表情包",
+      "items": [
+        { "key": "gg", "name": "GG", "file": "gg.webp" },
+        { "key": "carry", "name": "带飞", "file": "carry.png" }
+      ]
+    },
+    {
+      "key": "echo-emoji",
+      "kind": "emoji",
+      "name": "Echo Emoji",
+      "items": [ { "key": "whale", "name": "whale", "file": "whale.png" } ]
+    }
+  ]
+}
+```
+
+`kind` 只能是 `sticker` 或 `emoji`；每个分组和资源的 `key` 是稳定英文标识，修改显示名称不影响资源身份。图片文件直接放在对应清单目录下，支持 PNG/JPEG/GIF/WebP；emoji 上限 256 KiB，sticker 上限 2 MiB。目录中的源图片应保留备份。内置组在客户端显示“内置”且不能编辑；资源清单移除某一项并再次同步后，该项会从选择器隐藏，既有消息引用仍保留。
+
+在 Windows 上可将图片复制进仓库的 `expression-packs/server-squad/`，编辑 JSON 后提交并推送；VPS 部署更新完成后执行：
+
+```bash
+cd /opt/echo
+docker compose exec api node /app/scripts/sync-expression-packs.js
+```
+
+也可以直接在 VPS 项目目录操作。首次拉取包含该功能的新版本后，Compose 会通过 API 启动时的迁移创建分组表，无需手工执行 SQL。清单同步可重复执行；删除/改名资源后再次同步即可刷新。界面中的自建分组与服务器内置分组是分开的：小队成员可在 Emoji 或表情包选择器里点分组行的“+”创建，选中自建组后可改名、删除；删组只会解除资源分组，不会删资源图片。上传时会放入当前选中的分组。
+
+API 容器对资源目录只有只读权限，所有同步图片会复制进 `echo-uploads` Docker 持久卷，因此 API 重建不会丢图。备份时同时保留 `expression-packs/` 源目录和 Compose 的 `echo-uploads` 卷；仅保留 Docker 卷不能重新编辑原始资源清单。
+
+## 配置 AI 机器人的专属表情包图库
+
+机器人使用独立图库，不会从用户的 Emoji/Sticker 中挑图。先查出机器人的数据库 ID：
+
+```bash
+cd /opt/echo
+docker compose exec -T postgres psql -U echo -d echo -c 'SELECT id,name FROM ai_agents ORDER BY name;'
+```
+
+在 VPS 项目目录为要配置的机器人建目录，目录名必须是查询返回的 `id`：
+
+```bash
+AGENT_ID='替换成查询得到的机器人ID'
+sudo -u echo-deploy mkdir -p "/opt/echo/ai-sticker-packs/$AGENT_ID"
+```
+
+把图片复制到这个目录，并在该目录创建 `manifest.json`。示例：
+
+```json
+{
+  "agentId": "agent-实际机器人ID",
+  "groups": [
+    {
+      "key": "happy",
+      "emotion": "happy",
+      "name": "开心",
+      "items": [
+        { "key": "laugh", "name": "大笑", "description": "朋友间开心大笑和庆祝。", "file": "laugh.webp" }
+      ]
+    },
+    {
+      "key": "comfort",
+      "emotion": "comfort",
+      "name": "安慰",
+      "items": [
+        { "key": "hug", "name": "抱抱", "description": "温柔安慰、表达支持。", "file": "hug.png" }
+      ]
+    }
+  ]
+}
+```
+
+`agentId` 必须与目录名相同。分组使用稳定的英文 `key`，`emotion` 是提供给模型的情绪标签；每张图有稳定 `key`、显示名、图片文件名和可选 `description`。描述应说明图像内容与适用情景，帮助模型选图。图片支持 PNG/JPEG/GIF/WebP，最多 2 MiB/张；源文件保留在 `ai-sticker-packs/`，同步脚本会复制到持久化的 `echo-uploads` 卷。
+
+保存清单和图片后执行：
+
+```bash
+cd /opt/echo
+docker compose exec api node /app/scripts/sync-ai-sticker-packs.js
+```
+
+然后在 Echo 的机器人设置中启用 **机器人发表情包**，并保存设置。机器人会在适合的回复中最多选择一张图，先发送文字，再以单独消息发图；普通问答不会强制附图。可以编辑清单增删情绪和图片后再次同步；从清单移除的图片不会用于后续回复，但历史消息仍可查看。同步脚本只处理目录名对应的机器人，不接受客户端上传，也不读取用户表情库。配置与同步入口代码见 `ai-sticker-packs/README.md` 和 `api/scripts/sync-ai-sticker-packs.js`。
 
 ## 推送后自动部署（GitHub Actions）
 

@@ -1,0 +1,5 @@
+.ai-sticker-library{display:flex;flex-direction:column;gap:5px;margin-top:12px}
+.ai-sticker-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:34px;padding:5px 8px;background:#25272e;border-radius:5px;color:#d6d8df;font-size:11px}
+.ai-sticker-row .expression-group-action{flex:none}
+#ai-sticker-scope{min-height:34px;padding:0 9px;border:1px solid #ffffff19;border-radius:6px;background:#25272e;color:#e6e8ee;font:inherit;font-size:11px}
+#ai-sticker-feedback{min-height:16px}

@@ -1,0 +1,62 @@
+.voice-record-button { color: #b9bac0; }
+.voice-record-button:hover { color: #fff; background: #35373c; }
+.voice-record-button.is-recording { color: #f23f43; background: rgba(242,63,67,.14); animation: voice-record-pulse 1.4s ease-in-out infinite; }
+.voice-record-button:disabled { opacity: .48; cursor: not-allowed; }
+@keyframes voice-record-pulse { 50% { box-shadow: 0 0 0 5px rgba(242,63,67,.08); } }
+.voice-recorder { display: grid; grid-template-columns: minmax(130px, 1fr) auto; align-items: center; gap: 10px 18px; padding: 12px 16px; margin: 0 0 8px; color: #dbdee1; background: #232428; border: 1px solid #3f4147; border-radius: 9px; }
+.voice-recorder-status { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+.voice-recorder-status time { color: #f23f43; font-variant-numeric: tabular-nums; font-weight: 650; }
+.voice-recording-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #f23f43; box-shadow: 0 0 0 4px rgba(242,63,67,.12); animation: voice-dot-pulse 1s ease-in-out infinite; }
+@keyframes voice-dot-pulse { 50% { opacity: .38; } }
+.voice-meter { min-height: 25px; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 0 8px; border-radius: 6px; background: #1e1f22; overflow: hidden; }
+.voice-meter-bar { width: 3px; height: 4px; flex: 0 0 3px; border-radius: 4px; background: #5865f2; transition: height 90ms linear; }
+.voice-recorder-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.voice-recorder-actions > span { flex: 1; color: #949ba4; font-size: 11px; }
+.voice-recorder-actions button, .voice-message-remove { min-height: 30px; padding: 0 11px; color: #dbdee1; background: #35373c; border: 0; border-radius: 5px; cursor: pointer; font: inherit; font-size: 12px; }
+.voice-recorder-actions button:hover, .voice-message-remove:hover { background: #41434a; }
+.voice-recorder-actions #voice-record-stop { color: #fff; background: #5865f2; font-weight: 600; }
+.voice-recorder-actions #voice-record-stop:hover { background: #4752c4; }
+.voice-recorder-actions button:disabled { opacity: .55; cursor: wait; }
+.voice-message-draft { display: grid; grid-template-columns: minmax(115px, 170px) minmax(180px, 360px) 30px; align-items: center; gap: 11px; width: fit-content; max-width: 100%; padding: 8px 10px; background: #2b2d31; border: 1px solid #3f4147; border-radius: 8px; }
+.voice-message-draft-info { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.voice-message-draft-info > .icon { width: 20px; height: 20px; color: #b9a8ff; }
+.voice-message-draft-info span { display: grid; min-width: 0; gap: 2px; }
+.voice-message-draft-info strong { font-size: 12px; font-weight: 600; }
+.voice-message-draft-info small { color: #949ba4; font-size: 10px; white-space: nowrap; }
+.voice-message-draft audio, .voice-message-player { width: 100%; height: 34px; }
+.voice-message-remove { width: 28px; min-height: 28px; padding: 5px; display: grid; place-items: center; }
+.voice-message-remove .icon { width: 15px; height: 15px; }
+.message-voice-card { display: grid; gap: 7px; width: min(380px, 100%); margin-top: 7px; padding: 10px 12px; background: #2b2d31; border: 1px solid #3b3d43; border-radius: 9px; }
+.message-voice-heading { display: flex; align-items: center; gap: 8px; color: #dbdee1; font-size: 12px; font-weight: 600; }
+.message-voice-heading .icon { width: 17px; height: 17px; color: #b9a8ff; }
+.message-voice-heading time { margin-left: auto; color: #949ba4; font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.voice-message-player { accent-color: #5865f2; }
+.voice-message-player::-webkit-media-controls-panel { background: #1e1f22; }
+.voice-message-error { color: #f23f43; font-size: 11px; }
+.voice-message-error:empty { display: none; }
+.qq-voice-card { grid-template-columns: 32px minmax(74px, 1fr) auto; align-items: center; gap: 0 10px; width: min(276px, 100%); min-height: 48px; padding: 8px 11px; background: #35373f; border: 1px solid #ffffff0b; border-radius: 10px; }
+.qq-voice-play { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: #fff; background: #5865f2; border: 0; border-radius: 50%; cursor: pointer; transition: background .16s ease, transform .16s ease; }
+.qq-voice-play:hover { background: #6875ff; transform: scale(1.04); }
+.qq-voice-play:disabled { opacity: .6; cursor: wait; }
+.qq-voice-play .icon { width: 15px; height: 15px; }
+.qq-voice-play .icon use { fill: currentColor; stroke: none; }
+.qq-voice-card.is-playing .qq-voice-play { background: #7468dc; }
+.qq-voice-wave { height: 24px; display: flex; align-items: center; justify-content: space-between; gap: 2px; min-width: 0; overflow: hidden; }
+.qq-voice-wave i { width: 2px; height: var(--bar-height); flex: 1 0 2px; max-width: 3px; border-radius: 3px; background: #aeb3c0; opacity: .72; transition: background .12s ease, opacity .12s ease; }
+.qq-voice-wave i.is-played { background: #b7aaff; opacity: 1; }
+.qq-voice-card.is-loading .qq-voice-wave i { animation: voice-wave-loading .9s ease-in-out infinite alternate; animation-delay: calc(var(--bar-height) * -0.035s); }
+@keyframes voice-wave-loading { to { transform: scaleY(.45); opacity: .42; } }
+.qq-voice-duration { color: #c9cbd3; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.voice-message-source { display: none; }
+.voice-message-transcript { grid-column: 1 / -1; margin: 8px -1px 0; padding: 8px 1px 0; color: #e2e3e9; border-top: 1px solid #ffffff10; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.qq-voice-card .voice-message-error { grid-column: 1 / -1; margin-top: 5px; }
+@media (max-width: 620px) {
+  .voice-recorder { grid-template-columns: 1fr; gap: 9px; padding: 10px 12px; }
+  .voice-meter { grid-row: 2; min-height: 22px; }
+  .voice-recorder-actions { grid-row: 3; }
+  .voice-recorder-actions > span { font-size: 10px; }
+  .voice-message-draft { grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.4fr) 28px; gap: 7px; width: 100%; }
+  .message-voice-card { width: min(100%, 340px); }
+  .qq-voice-card { width: min(276px, 100%); }
+}
+.voice-recorder[hidden] { display: none; }
